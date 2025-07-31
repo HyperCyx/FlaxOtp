@@ -313,7 +313,26 @@ async def delete_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     args = context.args
     if not args:
-        await update.message.reply_text("Usage: /delete <country_code>\nExample: /delete sa")
+        # Show available countries to delete
+        db = context.bot_data["db"]
+        countries_coll = db[COUNTRIES_COLLECTION]
+        countries = await countries_coll.find({}).to_list(length=50)
+        
+        if not countries:
+            await update.message.reply_text("📭 No countries found in database.")
+            return
+        
+        message_lines = ["🗑️ Available countries to delete:"]
+        for country in countries:
+            flag = get_country_flag(country.get("detected_country", country["country_code"]))
+            display_name = country.get("display_name", country["country_code"])
+            count = country.get("number_count", 0)
+            message_lines.append(f"{flag} {display_name} ({country['country_code']}) - {count} numbers")
+        
+        message_lines.append("\nUsage: /delete <country_code>")
+        message_lines.append("Example: /delete india_ws")
+        
+        await update.message.reply_text("\n".join(message_lines))
         return
 
     country_code = args[0].lower()
@@ -322,16 +341,123 @@ async def delete_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     coll = db[COLLECTION_NAME]
     countries_coll = db[COUNTRIES_COLLECTION]
 
-    country_exists = await countries_coll.count_documents({"country_code": country_code}) > 0
-    if not country_exists:
+    # Check if country exists
+    country_info = await countries_coll.find_one({"country_code": country_code})
+    if not country_info:
         await update.message.reply_text(f"❌ Country code '{country_code}' not found in database.")
         return
 
+    # Get country display name
+    display_name = country_info.get("display_name", country_code)
+    
+    # Delete numbers
     result = await coll.delete_many({"country_code": country_code})
+    
+    # Delete country from countries collection
+    await countries_coll.delete_one({"country_code": country_code})
+    
+    flag = get_country_flag(country_info.get("detected_country", country_code))
+    
     await update.message.reply_text(
-        f"✅ Deleted {result.deleted_count} numbers for country `{country_code}`.",
-        parse_mode=ParseMode.MARKDOWN
+        f"✅ Deleted {result.deleted_count} numbers for {flag} {display_name} (`{country_code}`)."
     )
+
+async def delete_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Delete a specific phone number"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("🚫 You are not authorized to delete numbers.")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /deletenum <phone_number>\nExample: /deletenum +966501234567")
+        return
+
+    phone_number = args[0]
+    cleaned_number = clean_number(phone_number)
+    
+    db = context.bot_data["db"]
+    coll = db[COLLECTION_NAME]
+
+    # Find and delete the number
+    result = await coll.find_one_and_delete({"number": cleaned_number})
+    
+    if result:
+        country_code = result.get("country_code", "unknown")
+        flag = get_country_flag(result.get("detected_country", country_code))
+        formatted_number = format_number_display(cleaned_number)
+        
+        await update.message.reply_text(
+            f"✅ Deleted number: {flag} {formatted_number} (Country: {country_code})"
+        )
+    else:
+        await update.message.reply_text(f"❌ Number '{phone_number}' not found in database.")
+
+async def delete_all_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Delete all numbers from database"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("🚫 You are not authorized to delete numbers.")
+        return
+
+    # Ask for confirmation
+    if not context.args or context.args[0] != "confirm":
+        await update.message.reply_text(
+            "⚠️ This will delete ALL numbers from the database!\n"
+            "To confirm, use: /deleteall confirm"
+        )
+        return
+
+    db = context.bot_data["db"]
+    coll = db[COLLECTION_NAME]
+    countries_coll = db[COUNTRIES_COLLECTION]
+
+    # Get count before deletion
+    total_numbers = await coll.count_documents({})
+    
+    # Delete all numbers
+    result = await coll.delete_many({})
+    
+    # Delete all countries
+    await countries_coll.delete_many({})
+    
+    await update.message.reply_text(
+        f"🗑️ Deleted all {result.deleted_count} numbers from database."
+    )
+
+async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show database statistics"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("🚫 You are not authorized to view stats.")
+        return
+
+    db = context.bot_data["db"]
+    coll = db[COLLECTION_NAME]
+    countries_coll = db[COUNTRIES_COLLECTION]
+
+    # Get total numbers
+    total_numbers = await coll.count_documents({})
+    
+    # Get countries with counts
+    countries = await countries_coll.find({}).to_list(length=50)
+    
+    message_lines = [
+        "📊 Database Statistics:",
+        f"📱 Total Numbers: {total_numbers}",
+        f"🌍 Total Countries: {len(countries)}",
+        "",
+        "📋 Countries:"
+    ]
+    
+    for country in countries:
+        flag = get_country_flag(country.get("detected_country", country["country_code"]))
+        display_name = country.get("display_name", country["country_code"])
+        count = country.get("number_count", 0)
+        message_lines.append(f"{flag} {display_name}: {count} numbers")
+    
+    await update.message.reply_text("\n".join(message_lines))
 
 def format_number_display(number):
     """Format number for display with proper spacing"""
@@ -694,6 +820,9 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), handle_text_message))
     app.add_handler(CommandHandler("addlist", addlist))
     app.add_handler(CommandHandler("delete", delete_country))
+    app.add_handler(CommandHandler("deletenum", delete_number))
+    app.add_handler(CommandHandler("deleteall", delete_all_numbers))
+    app.add_handler(CommandHandler("stats", show_stats))
 
     logging.info("Bot started and polling...")
     app.run_polling()
