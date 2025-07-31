@@ -307,11 +307,15 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def delete_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    logging.info(f"Delete country command called by user {user_id}")
+    
     if user_id not in ADMIN_IDS:
         await update.message.reply_text("🚫 You are not authorized to delete numbers.")
         return
 
     args = context.args
+    logging.info(f"Delete country args: {args}")
+    
     if not args:
         # Show available countries to delete
         db = context.bot_data["db"]
@@ -365,6 +369,8 @@ async def delete_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def delete_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Delete a specific phone number"""
     user_id = update.effective_user.id
+    logging.info(f"Delete number command called by user {user_id}")
+    
     if user_id not in ADMIN_IDS:
         await update.message.reply_text("🚫 You are not authorized to delete numbers.")
         return
@@ -509,9 +515,17 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text("\n".join(message_lines))
 
+async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Test command to verify bot is working"""
+    user_id = update.effective_user.id
+    logging.info(f"Test command called by user {user_id}")
+    await update.message.reply_text("✅ Bot is working! Commands are registered.")
+
 async def list_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List all numbers in database"""
     user_id = update.effective_user.id
+    logging.info(f"List numbers command called by user {user_id}")
+    
     if user_id not in ADMIN_IDS:
         await update.message.reply_text("🚫 You are not authorized to view numbers.")
         return
@@ -905,6 +919,13 @@ def main():
 
     # Register handlers
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("test", test_command))
+    app.add_handler(CommandHandler("delete", delete_country))
+    app.add_handler(CommandHandler("deletenum", delete_number))
+    app.add_handler(CommandHandler("deleteall", delete_all_numbers))
+    app.add_handler(CommandHandler("stats", show_stats))
+    app.add_handler(CommandHandler("list", list_numbers))
+    app.add_handler(CommandHandler("addlist", addlist))
     app.add_handler(CallbackQueryHandler(check_join, pattern="check_join"))
     app.add_handler(CallbackQueryHandler(request_number, pattern="request_number"))
     app.add_handler(CallbackQueryHandler(send_number, pattern="^country_"))
@@ -913,12 +934,6 @@ def main():
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(MessageHandler(filters.Document.FileExtension("csv") & filters.User(ADMIN_IDS), upload_csv))
     app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), handle_text_message))
-    app.add_handler(CommandHandler("addlist", addlist))
-    app.add_handler(CommandHandler("delete", delete_country))
-    app.add_handler(CommandHandler("deletenum", delete_number))
-    app.add_handler(CommandHandler("deleteall", delete_all_numbers))
-    app.add_handler(CommandHandler("stats", show_stats))
-    app.add_handler(CommandHandler("list", list_numbers))
 
     logging.info("Bot started and polling...")
     app.run_polling()
