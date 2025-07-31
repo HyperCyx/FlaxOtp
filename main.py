@@ -140,14 +140,17 @@ async def countries_keyboard(db):
         country_info = await countries_coll.find_one({"country_code": country_code})
         if country_info and "display_name" in country_info:
             display_name = country_info["display_name"]
+            # Use detected country for flag if available
+            detected_country = country_info.get("detected_country", country_code)
+            flag = get_country_flag(detected_country)
         else:
             try:
                 country = pycountry.countries.get(alpha_2=country_code.upper())
                 display_name = country.name if country else country_code
             except:
                 display_name = country_code
+            flag = get_country_flag(country_code)
         
-        flag = get_country_flag(country_code)
         buttons.append([InlineKeyboardButton(f"{flag} {display_name}", callback_data=f"country_{country_code}")])
     
     return InlineKeyboardMarkup(buttons)
@@ -226,8 +229,12 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         number = result["number"]
         formatted_number = format_number_display(number)
         
+        # Use detected country for flag if available
+        detected_country = result.get("detected_country", country_code)
+        flag = get_country_flag(detected_country)
+        
         message = (
-            f"🌐 Country: {country_name}\n"
+            f"{flag} Country: {country_name}\n"
             f"📞 Number: {formatted_number}\n\n"
             "Select an option:"
         )
@@ -261,8 +268,12 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         number = result["number"]
         formatted_number = format_number_display(number)
         
+        # Use detected country for flag if available
+        detected_country = result.get("detected_country", country_code)
+        flag = get_country_flag(detected_country)
+        
         message = (
-            f"🌐 Country: {country_name}\n"
+            f"{flag} Country: {country_name}\n"
             f"📞 Number: {formatted_number}\n\n"
             "Select an option:"
         )
@@ -536,15 +547,30 @@ async def process_csv_with_country(update: Update, context: ContextTypes.DEFAULT
     coll = db[COLLECTION_NAME]
     countries_coll = db[COUNTRIES_COLLECTION]
 
-    # Use the provided country name as the country code (custom naming)
-    country_code = country_name.lower().replace(" ", "_")
-    country_display_name = country_name
-
-    # Process CSV file
+    # Process CSV file first to detect country from numbers
     numbers, process_msg = await process_csv_file(uploaded_csv)
     if not numbers:
         await update.message.reply_text(f"❌ {process_msg}")
         return
+
+    # Detect the most common country from the numbers
+    detected_countries = {}
+    for num_data in numbers:
+        detected_country = detect_country_code(num_data['number'], num_data.get('range', ''))
+        if detected_country:
+            detected_countries[detected_country] = detected_countries.get(detected_country, 0) + 1
+    
+    # Get the most common detected country
+    most_common_country = None
+    if detected_countries:
+        most_common_country = max(detected_countries, key=detected_countries.get)
+    
+    # Use the provided country name as the country code (custom naming)
+    country_code = country_name.lower().replace(" ", "_")
+    country_display_name = country_name
+    
+    # Store the detected country for flag purposes
+    detected_country_code = most_common_country if most_common_country else "unknown"
 
     # Override country codes with the provided country
     for num_data in numbers:
@@ -556,19 +582,20 @@ async def process_csv_with_country(update: Update, context: ContextTypes.DEFAULT
 
     for num_data in numbers:
         try:
-            # Insert number
+            # Insert number with both custom country code and detected country
             await coll.insert_one({
                 "country_code": num_data['country_code'],
                 "number": num_data['number'],
                 "original_number": num_data['original_number'],
                 "range": num_data['range'],
+                "detected_country": detected_country_code,  # Store detected country for flag
                 "added_at": datetime.now(TIMEZONE)
             })
             
             inserted_count += 1
             
-            # Get country info
-            flag = get_country_flag(num_data['country_code'])
+            # Get country flag from detected country, but display custom name
+            flag = get_country_flag(detected_country_code)
             number_details.append(f"{flag} {num_data['number']} - {country_display_name}")
         except Exception as e:
             logging.error(f"Error inserting number: {e}")
@@ -580,6 +607,7 @@ async def process_csv_with_country(update: Update, context: ContextTypes.DEFAULT
         {"$set": {
             "country_code": country_code,
             "display_name": country_display_name,
+            "detected_country": detected_country_code,  # Store detected country
             "last_updated": datetime.now(TIMEZONE),
             "number_count": inserted_count
         }},
@@ -595,11 +623,24 @@ async def process_csv_with_country(update: Update, context: ContextTypes.DEFAULT
     report_lines = [
         "📊 Upload Report:",
         f"✅ Successfully uploaded {inserted_count} numbers",
-        f"🌍 Country: {country_display_name}",
+        f"🌍 Custom Name: {country_display_name}",
+    ]
+    
+    if most_common_country:
+        detected_country_name = "Unknown"
+        try:
+            country = pycountry.countries.get(alpha_2=most_common_country.upper())
+            if country:
+                detected_country_name = country.name
+        except:
+            pass
+        report_lines.append(f"🏳️ Detected Country: {detected_country_name} ({most_common_country.upper()})")
+    
+    report_lines.extend([
         "",
         "📋 Sample numbers:",
         *number_details[:10]
-    ]
+    ])
 
     if len(number_details) > 10:
         report_lines.append(f"\n... and {len(number_details) - 10} more numbers")
@@ -611,8 +652,8 @@ async def process_csv_with_country(update: Update, context: ContextTypes.DEFAULT
     if len(number_details) > 10:
         report_file = BytesIO()
         report_file.write("\n".join([
-            "Number,Country,Country Code",
-            *[f"{num.split(' - ')[0]},{country_display_name},{country_code}" 
+            "Number,Custom Country,Detected Country",
+            *[f"{num.split(' - ')[0]},{country_display_name},{detected_country_code.upper()}" 
               for num in number_details]
         ]).encode('utf-8'))
         report_file.seek(0)
