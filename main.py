@@ -39,6 +39,19 @@ def get_country_flag(country_code):
         country_code = country_code.upper()
         if country_code == 'XK':
             return '🇽🇰'
+        # Handle custom country codes (like "india_ws", "india_tg")
+        if "_" in country_code or len(country_code) > 2:
+            # Try to extract a valid country code from the custom name
+            if country_code.startswith("INDIA"):
+                return '🇮🇳'
+            elif country_code.startswith("SAUDI") or country_code.startswith("SA"):
+                return '🇸🇦'
+            elif country_code.startswith("USA") or country_code.startswith("US"):
+                return '🇺🇸'
+            elif country_code.startswith("UK") or country_code.startswith("GB"):
+                return '🇬🇧'
+            else:
+                return '🌐'
         if len(country_code) != 2 or not country_code.isalpha():
             return '🌐'
         offset = ord('🇦') - ord('A')
@@ -388,7 +401,8 @@ async def upload_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Ask for country name
     await update.message.reply_text(
         "🌍 Please enter the country name for the numbers in this CSV file:\n"
-        "Example: Saudi Arabia, USA, India, etc."
+        "Examples: India Ws, India Tg, Saudi Arabia, USA, etc.\n"
+        "You can use custom names like 'India Ws' for WhatsApp numbers or 'India Tg' for Telegram numbers."
     )
 
 async def addlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -522,20 +536,9 @@ async def process_csv_with_country(update: Update, context: ContextTypes.DEFAULT
     coll = db[COLLECTION_NAME]
     countries_coll = db[COUNTRIES_COLLECTION]
 
-    # Try to find country code from the provided country name
-    country_code = None
-    try:
-        # Search for country using pycountry
-        countries = pycountry.countries.search_fuzzy(country_name)
-        if countries:
-            country_code = countries[0].alpha_2.lower()
-            country_display_name = countries[0].name
-        else:
-            await update.message.reply_text(f"❌ Could not find country: {country_name}")
-            return
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error finding country: {str(e)}")
-        return
+    # Use the provided country name as the country code (custom naming)
+    country_code = country_name.lower().replace(" ", "_")
+    country_display_name = country_name
 
     # Process CSV file
     numbers, process_msg = await process_csv_file(uploaded_csv)
