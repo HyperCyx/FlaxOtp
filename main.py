@@ -371,7 +371,32 @@ async def delete_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     args = context.args
     if not args:
-        await update.message.reply_text("Usage: /deletenum <phone_number>\nExample: /deletenum +966501234567")
+        # Show some example numbers from database
+        db = context.bot_data["db"]
+        coll = db[COLLECTION_NAME]
+        
+        # Get a few sample numbers
+        sample_numbers = await coll.find({}).limit(5).to_list(length=5)
+        
+        if sample_numbers:
+            message_lines = ["📱 Available numbers to delete (examples):"]
+            for num_data in sample_numbers:
+                flag = get_country_flag(num_data.get("detected_country", num_data["country_code"]))
+                formatted_num = format_number_display(num_data["number"])
+                country_code = num_data["country_code"]
+                message_lines.append(f"{flag} {formatted_num} ({country_code})")
+            
+            message_lines.append("\nUsage: /deletenum <phone_number>")
+            message_lines.append("Example: /deletenum +966501234567")
+            message_lines.append("Note: You can use with or without + prefix")
+        else:
+            message_lines = [
+                "📭 No numbers found in database.",
+                "Usage: /deletenum <phone_number>",
+                "Example: /deletenum +966501234567"
+            ]
+        
+        await update.message.reply_text("\n".join(message_lines))
         return
 
     phone_number = args[0]
@@ -380,19 +405,44 @@ async def delete_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = context.bot_data["db"]
     coll = db[COLLECTION_NAME]
 
-    # Find and delete the number
+    # Try to find the number with different formats
+    result = None
+    
+    # Try exact match first
     result = await coll.find_one_and_delete({"number": cleaned_number})
+    
+    # If not found, try with + prefix
+    if not result and not cleaned_number.startswith("+"):
+        result = await coll.find_one_and_delete({"number": f"+{cleaned_number}"})
+    
+    # If not found, try without + prefix
+    if not result and cleaned_number.startswith("+"):
+        result = await coll.find_one_and_delete({"number": cleaned_number[1:]})
+    
+    # If still not found, try original_number field
+    if not result:
+        result = await coll.find_one_and_delete({"original_number": phone_number})
     
     if result:
         country_code = result.get("country_code", "unknown")
         flag = get_country_flag(result.get("detected_country", country_code))
-        formatted_number = format_number_display(cleaned_number)
+        formatted_number = format_number_display(result["number"])
         
         await update.message.reply_text(
             f"✅ Deleted number: {flag} {formatted_number} (Country: {country_code})"
         )
+        
+        # Update country count
+        countries_coll = db[COUNTRIES_COLLECTION]
+        await countries_coll.update_one(
+            {"country_code": country_code},
+            {"$inc": {"number_count": -1}}
+        )
     else:
-        await update.message.reply_text(f"❌ Number '{phone_number}' not found in database.")
+        await update.message.reply_text(
+            f"❌ Number '{phone_number}' not found in database.\n"
+            "Try using the exact format as stored in the database."
+        )
 
 async def delete_all_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Delete all numbers from database"""
@@ -456,6 +506,51 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         display_name = country.get("display_name", country["country_code"])
         count = country.get("number_count", 0)
         message_lines.append(f"{flag} {display_name}: {count} numbers")
+    
+    await update.message.reply_text("\n".join(message_lines))
+
+async def list_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all numbers in database"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("🚫 You are not authorized to view numbers.")
+        return
+
+    args = context.args
+    country_filter = None
+    if args:
+        country_filter = args[0].lower()
+
+    db = context.bot_data["db"]
+    coll = db[COLLECTION_NAME]
+
+    # Build query
+    query = {}
+    if country_filter:
+        query["country_code"] = country_filter
+
+    # Get numbers
+    numbers = await coll.find(query).limit(20).to_list(length=20)
+    
+    if not numbers:
+        if country_filter:
+            await update.message.reply_text(f"📭 No numbers found for country '{country_filter}'.")
+        else:
+            await update.message.reply_text("📭 No numbers found in database.")
+        return
+
+    message_lines = [f"📱 Numbers in database{f' for {country_filter}' if country_filter else ''}:"]
+    
+    for num_data in numbers:
+        flag = get_country_flag(num_data.get("detected_country", num_data["country_code"]))
+        formatted_num = format_number_display(num_data["number"])
+        country_code = num_data["country_code"]
+        message_lines.append(f"{flag} {formatted_num} ({country_code})")
+    
+    if len(numbers) == 20:
+        message_lines.append("\n... (showing first 20 numbers)")
+    
+    message_lines.append(f"\nTotal: {len(numbers)} numbers shown")
     
     await update.message.reply_text("\n".join(message_lines))
 
@@ -823,6 +918,7 @@ def main():
     app.add_handler(CommandHandler("deletenum", delete_number))
     app.add_handler(CommandHandler("deleteall", delete_all_numbers))
     app.add_handler(CommandHandler("stats", show_stats))
+    app.add_handler(CommandHandler("list", list_numbers))
 
     logging.info("Bot started and polling...")
     app.run_polling()
