@@ -30,6 +30,7 @@ ADMIN_IDS = {7762548831}
 TIMEZONE = pytz.timezone('Asia/Riyadh')
 logging.basicConfig(level=logging.INFO)
 uploaded_csv = None
+user_states = {}  # Store user states for country input
 
 # === UTILITY FUNCTIONS ===
 def get_country_flag(country_code):
@@ -373,7 +374,7 @@ async def upload_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Only CSV files are supported.")
         return
 
-    await update.message.reply_text("📥 CSV file received! Processing...")
+    await update.message.reply_text("📥 CSV file received!")
 
     file_obj = await file.get_file()
     file_bytes = BytesIO()
@@ -381,8 +382,14 @@ async def upload_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_bytes.seek(0)
     uploaded_csv = file_bytes
 
-    # Process immediately after upload
-    await addlist(update, context)
+    # Set user state to wait for country input
+    user_states[user_id] = "waiting_for_country"
+    
+    # Ask for country name
+    await update.message.reply_text(
+        "🌍 Please enter the country name for the numbers in this CSV file:\n"
+        "Example: Saudi Arabia, USA, India, etc."
+    )
 
 async def addlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global uploaded_csv
@@ -500,6 +507,129 @@ async def addlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption="📄 Complete number upload report"
         )
 
+async def process_csv_with_country(update: Update, context: ContextTypes.DEFAULT_TYPE, country_name):
+    """Process CSV file with the provided country name"""
+    global uploaded_csv
+    user_id = update.effective_user.id
+    
+    if not uploaded_csv:
+        await update.message.reply_text("❌ No CSV file found. Please upload the file first.")
+        return
+
+    await update.message.reply_text("🔍 Analyzing and processing numbers...")
+
+    db = context.bot_data["db"]
+    coll = db[COLLECTION_NAME]
+    countries_coll = db[COUNTRIES_COLLECTION]
+
+    # Try to find country code from the provided country name
+    country_code = None
+    try:
+        # Search for country using pycountry
+        countries = pycountry.countries.search_fuzzy(country_name)
+        if countries:
+            country_code = countries[0].alpha_2.lower()
+            country_display_name = countries[0].name
+        else:
+            await update.message.reply_text(f"❌ Could not find country: {country_name}")
+            return
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error finding country: {str(e)}")
+        return
+
+    # Process CSV file
+    numbers, process_msg = await process_csv_file(uploaded_csv)
+    if not numbers:
+        await update.message.reply_text(f"❌ {process_msg}")
+        return
+
+    # Override country codes with the provided country
+    for num_data in numbers:
+        num_data['country_code'] = country_code
+
+    # Upload to database
+    inserted_count = 0
+    number_details = []
+
+    for num_data in numbers:
+        try:
+            # Insert number
+            await coll.insert_one({
+                "country_code": num_data['country_code'],
+                "number": num_data['number'],
+                "original_number": num_data['original_number'],
+                "range": num_data['range'],
+                "added_at": datetime.now(TIMEZONE)
+            })
+            
+            inserted_count += 1
+            
+            # Get country info
+            flag = get_country_flag(num_data['country_code'])
+            number_details.append(f"{flag} {num_data['number']} - {country_display_name}")
+        except Exception as e:
+            logging.error(f"Error inserting number: {e}")
+            continue
+
+    # Update countries collection
+    await countries_coll.update_one(
+        {"country_code": country_code},
+        {"$set": {
+            "country_code": country_code,
+            "display_name": country_display_name,
+            "last_updated": datetime.now(TIMEZONE),
+            "number_count": inserted_count
+        }},
+        upsert=True
+    )
+
+    uploaded_csv = None
+    # Clear user state
+    if user_id in user_states:
+        del user_states[user_id]
+
+    # Prepare report
+    report_lines = [
+        "📊 Upload Report:",
+        f"✅ Successfully uploaded {inserted_count} numbers",
+        f"🌍 Country: {country_display_name}",
+        "",
+        "📋 Sample numbers:",
+        *number_details[:10]
+    ]
+
+    if len(number_details) > 10:
+        report_lines.append(f"\n... and {len(number_details) - 10} more numbers")
+
+    # Send report
+    await update.message.reply_text("\n".join(report_lines))
+
+    # Send complete list as file if many numbers
+    if len(number_details) > 10:
+        report_file = BytesIO()
+        report_file.write("\n".join([
+            "Number,Country,Country Code",
+            *[f"{num.split(' - ')[0]},{country_display_name},{country_code}" 
+              for num in number_details]
+        ]).encode('utf-8'))
+        report_file.seek(0)
+        await update.message.reply_document(
+            document=report_file,
+            filename="number_upload_report.csv",
+            caption="📄 Complete number upload report"
+        )
+
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle text messages for country input"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_IDS:
+        return
+    
+    if user_id in user_states and user_states[user_id] == "waiting_for_country":
+        country_name = update.message.text.strip()
+        await process_csv_with_country(update, context, country_name)
+
 # === MAIN BOT SETUP ===
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -517,6 +647,7 @@ def main():
     app.add_handler(CallbackQueryHandler(show_sms, pattern="^sms_"))
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(MessageHandler(filters.Document.FileExtension("csv") & filters.User(ADMIN_IDS), upload_csv))
+    app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), handle_text_message))
     app.add_handler(CommandHandler("addlist", addlist))
     app.add_handler(CommandHandler("delete", delete_country))
 
