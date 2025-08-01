@@ -1,4 +1,5 @@
 import logging
+import os
 from io import BytesIO, StringIO
 from datetime import datetime
 import csv
@@ -27,6 +28,7 @@ MONGO_URI = "mongodb+srv://noob:K3a4ofLngiMG8Hl9@tele.fjm9acq.mongodb.net/?retry
 DB_NAME = "TelegramBotDB"
 COLLECTION_NAME = "numbers"
 COUNTRIES_COLLECTION = "countries"
+USERS_COLLECTION = "verified_users"
 ADMIN_IDS = {7762548831}
 
 # SMS API Configuration
@@ -215,11 +217,52 @@ def number_options_keyboard(number, country_code):
 # === COMMAND HANDLERS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    username = update.effective_user.username
+    first_name = update.effective_user.first_name
+    last_name = update.effective_user.last_name
+    
     try:
-        chat_member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
-        if chat_member.status in ("member", "administrator", "creator"):
+        # Check if user is already verified
+        is_verified = await is_user_verified(user_id, context)
+        
+        if is_verified:
+            # User already verified, proceed directly
             await update.message.reply_text(
-                "✅ Channel join confirmed!\nYou can now request a number.",
+                "✅ Welcome back! You are already verified.\n\n"
+                "📞 You can now get phone numbers.",
+                reply_markup=number_keyboard()
+            )
+            return
+        
+        # Check channel membership for new user
+        chat_member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
+        
+        if chat_member.status in ("member", "administrator", "creator"):
+            # Store user data in database
+            db = context.bot_data["db"]
+            users_coll = db[USERS_COLLECTION]
+            
+            user_data = {
+                "user_id": user_id,
+                "username": username,
+                "first_name": first_name,
+                "last_name": last_name,
+                "verified_at": datetime.now(TIMEZONE),
+                "last_activity": datetime.now(TIMEZONE),
+                "status": "verified"
+            }
+            
+            await users_coll.insert_one(user_data)
+            
+            # Create cache file for user
+            await create_user_cache(user_id, user_data)
+            
+            logging.info(f"New user verified and stored via /start: {user_id} ({username})")
+            
+            await update.message.reply_text(
+                "✅ You have successfully joined the channel!\n\n"
+                "📱 Your account has been verified and cached.\n"
+                "📞 You can now get phone numbers.",
                 reply_markup=number_keyboard()
             )
         else:
@@ -228,7 +271,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Please join the channel and check again.",
                 reply_markup=join_channel_keyboard()
             )
-    except Exception:
+    except Exception as e:
+        logging.error(f"Error in start command: {e}")
         await update.message.reply_text("🚫 You haven't joined the channel yet!")
         await update.message.reply_text(
             "Please join the channel and check again.",
@@ -238,18 +282,109 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
+    
     try:
-        chat_member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
-        if chat_member.status in ("member", "administrator", "creator"):
+        user_id = query.from_user.id
+        username = query.from_user.username
+        first_name = query.from_user.first_name
+        last_name = query.from_user.last_name
+        
+        # Check if user is already verified in database
+        db = context.bot_data["db"]
+        users_coll = db[USERS_COLLECTION]
+        
+        existing_user = await users_coll.find_one({"user_id": user_id})
+        
+        if existing_user:
+            # User already verified, proceed directly
+            keyboard = number_keyboard()
             await query.edit_message_text(
-                "✅ Channel join confirmed!\nYou can now request a number.",
-                reply_markup=number_keyboard()
+                "✅ Welcome back! You are already verified.\n\n"
+                "📞 You can now get phone numbers.",
+                reply_markup=keyboard
+            )
+            return
+        
+        # Check channel membership for new user
+        chat_member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
+        
+        if chat_member.status in ['member', 'administrator', 'creator']:
+            # Store user data in database
+            user_data = {
+                "user_id": user_id,
+                "username": username,
+                "first_name": first_name,
+                "last_name": last_name,
+                "verified_at": datetime.now(TIMEZONE),
+                "last_activity": datetime.now(TIMEZONE),
+                "status": "verified"
+            }
+            
+            await users_coll.insert_one(user_data)
+            
+            # Create cache file for user
+            await create_user_cache(user_id, user_data)
+            
+            logging.info(f"New user verified and stored: {user_id} ({username})")
+            
+            keyboard = number_keyboard()
+            await query.edit_message_text(
+                "✅ You have successfully joined the channel!\n\n"
+                "📱 Your account has been verified and cached.\n"
+                "📞 You can now get phone numbers.",
+                reply_markup=keyboard
             )
         else:
-            await query.answer("You haven't joined the channel yet!", show_alert=True)
-    except Exception:
-        await query.answer("You haven't joined the channel yet!", show_alert=True)
+            await query.answer("❌ You need to join the channel first!", show_alert=True)
+    except Exception as e:
+        logging.error(f"Error checking channel membership: {e}")
+        await query.answer("❌ Error checking channel membership. Please try again.", show_alert=True)
+
+async def create_user_cache(user_id, user_data):
+    """Create a cache file for verified user"""
+    try:
+        cache_dir = "user_cache"
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir)
+        
+        cache_file = os.path.join(cache_dir, f"user_{user_id}.json")
+        
+        cache_data = {
+            "user_id": user_id,
+            "username": user_data.get("username"),
+            "first_name": user_data.get("first_name"),
+            "last_name": user_data.get("last_name"),
+            "verified_at": user_data.get("verified_at").isoformat() if user_data.get("verified_at") else None,
+            "status": "verified"
+        }
+        
+        with open(cache_file, 'w') as f:
+            json.dump(cache_data, f, indent=2)
+        
+        logging.info(f"Cache file created for user {user_id}")
+    except Exception as e:
+        logging.error(f"Error creating cache file for user {user_id}: {e}")
+
+async def is_user_verified(user_id, context):
+    """Check if user is verified (database or cache)"""
+    try:
+        # First check database
+        db = context.bot_data.get("db")
+        if db:
+            users_coll = db[USERS_COLLECTION]
+            user = await users_coll.find_one({"user_id": user_id})
+            if user:
+                return True
+        
+        # Then check cache file
+        cache_file = os.path.join("user_cache", f"user_{user_id}.json")
+        if os.path.exists(cache_file):
+            return True
+        
+        return False
+    except Exception as e:
+        logging.error(f"Error checking user verification: {e}")
+        return False
 
 async def request_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
