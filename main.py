@@ -273,7 +273,13 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     country_info = await countries_coll.find_one({"country_code": country_code})
     country_name = country_info["display_name"] if country_info else country_code
 
-    result = await coll.find_one({"country_code": country_code})
+    # Get a random number from the available numbers for this country (number stays in database for reuse)
+    pipeline = [
+        {"$match": {"country_code": country_code}},
+        {"$sample": {"size": 1}}
+    ]
+    results = await coll.aggregate(pipeline).to_list(length=1)
+    result = results[0] if results else None
     
     if result and "number" in result:
         number = result["number"]
@@ -508,15 +514,15 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                                 )
                                 logging.info(f"Updated OTP for {phone_number}: {current_otp}")
                                 
-                                # Delete the number from database after OTP is received
+                                # Delete the number from database after OTP is received (permanent deletion)
                                 db = context.bot_data["db"]
                                 coll = db[COLLECTION_NAME]
                                 countries_coll = db[COUNTRIES_COLLECTION]
                                 
-                                # Delete the number
+                                # Delete the number permanently (OTP received = never show again)
                                 delete_result = await coll.delete_one({"number": phone_number})
                                 if delete_result.deleted_count > 0:
-                                    logging.info(f"Deleted number {phone_number} after OTP received")
+                                    logging.info(f"Permanently deleted number {phone_number} after OTP received")
                                     
                                     # Update country count
                                     await countries_coll.update_one(
@@ -530,7 +536,7 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                                     # Show deletion message to user
                                     await context.bot.send_message(
                                         chat_id=chat_id,
-                                        text=f"✅ Number {formatted_number} has been deleted after receiving OTP: {current_otp}\n\n"
+                                        text=f"✅ Number {formatted_number} has been permanently deleted after receiving OTP: {current_otp}\n\n"
                                              f"🔄 Click 'Change' to get another number from the same country, or select a different country."
                                     )
                                     
@@ -549,16 +555,17 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                 time_elapsed = (current_time - start_time).total_seconds()
                 
                 if time_elapsed > OTP_TIMEOUT and not active_number_monitors[phone_number]['last_otp']:
-                    logging.info(f"Timeout reached for {phone_number}, returning to pool")
+                    logging.info(f"Timeout reached for {phone_number}, returning to pool for reuse")
                     
-                    # Stop monitoring
+                    # Stop monitoring (number stays in database for reuse)
                     await stop_otp_monitoring(phone_number)
                     
-                    # Notify user that number is being returned to pool
+                    # Notify user that number is being returned to pool for reuse
                     try:
                         await context.bot.send_message(
                             chat_id=chat_id,
-                            text=f"⏰ Number {format_number_display(phone_number)} has been returned to pool (no OTP received within 5 minutes)"
+                            text=f"⏰ Number {format_number_display(phone_number)} has been returned to pool (no OTP received within 5 minutes)\n\n"
+                                 f"🔄 This number can be given to other users again."
                         )
                     except Exception as e:
                         logging.error(f"Failed to send timeout message for {phone_number}: {e}")
