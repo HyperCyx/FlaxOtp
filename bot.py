@@ -1193,16 +1193,20 @@ async def check_api_connection(update: Update, context: ContextTypes.DEFAULT_TYP
                 
                 # Detect common issues
                 issues = []
+                warnings = []
+                
                 if 'login' in response_text.lower():
                     issues.append("❌ Session expired - redirected to login")
                 elif 'direct script access not allowed' in response_text.lower():
                     issues.append("❌ Direct script access blocked")
                 elif response.status != 200:
                     issues.append(f"❌ HTTP Error: {response.status}")
-                elif 'application/json' not in content_type and response_text.strip().startswith('{'):
-                    issues.append("⚠️ JSON response with wrong content-type")
                 elif not response_text.strip().startswith('{'):
                     issues.append("❌ Non-JSON response received")
+                
+                # Check for warnings (non-critical issues)
+                if 'application/json' not in content_type and response_text.strip().startswith('{'):
+                    warnings.append("⚠️ JSON response with HTML content-type (common, not critical)")
                 
                 # Try to parse JSON
                 json_valid = False
@@ -1227,17 +1231,34 @@ async def check_api_connection(update: Update, context: ContextTypes.DEFAULT_TYP
                     f"🍪 **Cookie**: {SMS_API_COOKIE[:20]}...{SMS_API_COOKIE[-10:]}",
                 ]
                 
+                # Add issues section
                 if issues:
                     message_lines.extend([
                         f"",
-                        f"⚠️ **Issues Detected**:"
+                        f"🚨 **Critical Issues Detected**:"
                     ])
                     message_lines.extend(issues)
+                
+                # Add warnings section
+                if warnings:
+                    message_lines.extend([
+                        f"",
+                        f"⚠️ **Warnings** (non-critical):"
+                    ])
+                    message_lines.extend(warnings)
+                
+                # Add final status
+                if not issues:
+                    message_lines.extend([
+                        f"",
+                        f"✅ **API Connection Healthy!**",
+                        f"🎯 **Ready for OTP detection**"
+                    ])
                 else:
                     message_lines.extend([
                         f"",
-                        f"✅ **All checks passed!**",
-                        f"🎯 **API is ready for OTP detection**"
+                        f"❌ **API has critical issues**",
+                        f"🔧 **Action required to fix OTP detection**"
                     ])
                 
                 message_lines.extend([
