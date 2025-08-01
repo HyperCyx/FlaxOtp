@@ -58,10 +58,14 @@ def extract_otp_from_message(message):
         r'OTP[:\s]*(\d{4,6})',  # "OTP: 123456"
         r'password[:\s]*(\d{4,6})',  # "password: 123456"
         r'pin[:\s]*(\d{4,6})',  # "pin: 123456"
+        r'passcode[:\s]*(\d{4,6})',  # "passcode: 123456"
         r'(\d{4,6})[^\d]*$',  # OTP at end of message
+        r'(\d{4,6})\s+is\s+your',  # "123456 is your"
+        r'your\s+(\d{4,6})',  # "your 123456"
     ]
     
     message_lower = message.lower()
+    logging.info(f"Extracting OTP from message: {message}")
     
     for pattern in patterns:
         match = re.search(pattern, message_lower)
@@ -69,8 +73,10 @@ def extract_otp_from_message(message):
             otp = match.group(1)
             # Validate that it's actually an OTP (not just any number)
             if len(otp) >= 4 and len(otp) <= 6 and otp.isdigit():
+                logging.info(f"Found OTP: {otp} using pattern: {pattern}")
                 return otp
     
+    logging.info(f"No OTP found in message: {message}")
     return None
 
 def get_country_flag(country_code):
@@ -378,9 +384,11 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_latest_sms_for_number(phone_number, date_str=None):
     """Get the latest SMS for a phone number and extract OTP"""
+    logging.info(f"Getting latest SMS for {phone_number}")
     sms_data = await check_sms_for_number(phone_number, date_str)
     
     if sms_data and 'aaData' in sms_data and sms_data['aaData']:
+        logging.info(f"SMS data found for {phone_number}, processing {len(sms_data['aaData'])} rows")
         # Filter out summary rows and get actual SMS messages
         sms_messages = []
         for row in sms_data['aaData']:
@@ -396,15 +404,22 @@ async def get_latest_sms_for_number(phone_number, date_str=None):
                         'message': row[5] if len(row) > 5 else 'No message content'
                     })
         
+        logging.info(f"Found {len(sms_messages)} valid SMS messages for {phone_number}")
+        
         if sms_messages:
             # Get the latest SMS (first in the list since it's sorted by desc)
             latest_sms = sms_messages[0]
+            logging.info(f"Latest SMS for {phone_number}: {latest_sms}")
             otp = extract_otp_from_message(latest_sms['message'])
-            return {
+            result = {
                 'sms': latest_sms,
                 'otp': otp,
                 'total_messages': len(sms_messages)
             }
+            logging.info(f"Returning SMS info for {phone_number}: {result}")
+            return result
+    else:
+        logging.info(f"No SMS data found for {phone_number}")
     
     return None
 
@@ -424,45 +439,56 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
     async def monitor_otp():
         while not active_number_monitors[phone_number]['stop']:
             try:
+                logging.info(f"Checking for new OTP for {phone_number}")
                 # Get latest SMS and OTP
                 sms_info = await get_latest_sms_for_number(phone_number)
                 
-                if sms_info and sms_info['otp']:
-                    current_otp = sms_info['otp']
-                    last_otp = active_number_monitors[phone_number]['last_otp']
-                    
-                    # Check if this is a new OTP
-                    if last_otp != current_otp:
-                        active_number_monitors[phone_number]['last_otp'] = current_otp
-                        active_number_monitors[phone_number]['last_check'] = sms_info['sms']['datetime']
+                if sms_info:
+                    logging.info(f"SMS info found for {phone_number}: {sms_info}")
+                    if sms_info['otp']:
+                        current_otp = sms_info['otp']
+                        last_otp = active_number_monitors[phone_number]['last_otp']
                         
-                        # Update the message with new OTP
-                        formatted_number = format_number_display(phone_number)
-                        detected_country = country_code  # Use the country code for flag
-                        flag = get_country_flag(detected_country)
+                        logging.info(f"Current OTP: {current_otp}, Last OTP: {last_otp}")
                         
-                        message = (
-                            f"{flag} Country: {country_name}\n"
-                            f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})\n"
-                            f"🔐 **OTP: `{current_otp}`**"
-                        )
-                        
-                        if sms_info['sms']['sender']:
-                            message += f"\n👤 Sender: {sms_info['sms']['sender']}"
-                        message += f"\n🕐 Time: {sms_info['sms']['datetime']}"
-                        message += "\n\nSelect an option:"
-                        
-                        try:
-                            await context.bot.edit_message_text(
-                                chat_id=chat_id,
-                                message_id=message_id,
-                                text=message,
-                                reply_markup=number_options_keyboard(phone_number, country_code),
-                                parse_mode=ParseMode.MARKDOWN
+                        # Check if this is a new OTP
+                        if last_otp != current_otp:
+                            active_number_monitors[phone_number]['last_otp'] = current_otp
+                            active_number_monitors[phone_number]['last_check'] = sms_info['sms']['datetime']
+                            
+                            # Update the message with new OTP
+                            formatted_number = format_number_display(phone_number)
+                            detected_country = country_code  # Use the country code for flag
+                            flag = get_country_flag(detected_country)
+                            
+                            message = (
+                                f"{flag} Country: {country_name}\n"
+                                f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})\n"
+                                f"🔐 **OTP: `{current_otp}`**"
                             )
-                            logging.info(f"Updated OTP for {phone_number}: {current_otp}")
-                        except Exception as e:
-                            logging.error(f"Failed to update message for {phone_number}: {e}")
+                            
+                            if sms_info['sms']['sender']:
+                                message += f"\n👤 Sender: {sms_info['sms']['sender']}"
+                            message += f"\n🕐 Time: {sms_info['sms']['datetime']}"
+                            message += "\n\nSelect an option:"
+                            
+                            try:
+                                await context.bot.edit_message_text(
+                                    chat_id=chat_id,
+                                    message_id=message_id,
+                                    text=message,
+                                    reply_markup=number_options_keyboard(phone_number, country_code),
+                                    parse_mode=ParseMode.MARKDOWN
+                                )
+                                logging.info(f"Updated OTP for {phone_number}: {current_otp}")
+                            except Exception as e:
+                                logging.error(f"Failed to update message for {phone_number}: {e}")
+                        else:
+                            logging.info(f"Same OTP for {phone_number}, no update needed")
+                    else:
+                        logging.info(f"No OTP found in SMS for {phone_number}")
+                else:
+                    logging.info(f"No SMS info found for {phone_number}")
                 
                 # Wait before next check
                 await asyncio.sleep(OTP_CHECK_INTERVAL)
