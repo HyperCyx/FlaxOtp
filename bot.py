@@ -1,8 +1,13 @@
 import logging
 import os
+import asyncio
 from io import BytesIO, StringIO
 from datetime import datetime, timedelta
 import csv
+import time
+import re
+import json
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -16,64 +21,33 @@ from telegram.ext import (
 from motor.motor_asyncio import AsyncIOMotorClient
 import pytz
 import pycountry
-import re
 import aiohttp
-import json
-import time
 
-# === CONFIGURATION ===
-TOKEN = "7650570527:AAG9K_XGEZ2MGcXkBc2h7cltVPQTWayhh00"
-CHANNEL_ID = -1002555911826
-CHANNEL_LINK = "https://t.me/+6Cw11PRcrFc1NmI1"
-MONGO_URI = "mongodb+srv://noob:K3a4ofLngiMG8Hl9@tele.fjm9acq.mongodb.net/?retryWrites=true&w=majority"
-DB_NAME = "TelegramBotDB"
-COLLECTION_NAME = "numbers"
-COUNTRIES_COLLECTION = "countries"
-USERS_COLLECTION = "verified_users"
-ADMIN_IDS = {7762548831}
+# Import all configurations from config.py
+from config import *
 
-# SMS API Configuration
-SMS_API_BASE_URL = "http://51.83.103.80"
-SMS_API_ENDPOINT = "/ints/agent/res/data_smscdr.php"
-SMS_API_COOKIE = "PHPSESSID=jfi9fn51crfub5jj850qte6tah"
+# === GLOBAL VARIABLES ===
+TIMEZONE = pytz.timezone(TIMEZONE_NAME)
+logging.basicConfig(level=getattr(logging, LOGGING_LEVEL))
 
-# OTP Monitoring Configuration
-OTP_CHECK_INTERVAL = 5  # Check for new OTPs every 5 seconds
-OTP_TIMEOUT = 300  # Return number to pool after 5 minutes if no OTP
-active_number_monitors = {}  # Store active monitors for each number
-
-TIMEZONE = pytz.timezone('Asia/Riyadh')
-logging.basicConfig(level=logging.INFO)
+# Bot state variables
 uploaded_csv = None
 user_states = {}  # Store user states for country input
 manual_numbers = {}  # Store manual numbers for each user
 current_user_numbers = {}  # Track current number for each user
 user_monitoring_sessions = {}  # Track multiple monitoring sessions per user
+active_number_monitors = {}  # Store active monitors for each number
 
 # === UTILITY FUNCTIONS ===
 def extract_otp_from_message(message):
-    """Extract OTP from SMS message"""
+    """Extract OTP from SMS message using patterns from config"""
     if not message:
         return None
-    
-    # Common OTP patterns
-    patterns = [
-        r'\b(\d{4,6})\b',  # 4-6 digit OTP
-        r'code[:\s]*(\d{4,6})',  # "code: 123456"
-        r'verification[:\s]*(\d{4,6})',  # "verification: 123456"
-        r'OTP[:\s]*(\d{4,6})',  # "OTP: 123456"
-        r'password[:\s]*(\d{4,6})',  # "password: 123456"
-        r'pin[:\s]*(\d{4,6})',  # "pin: 123456"
-        r'passcode[:\s]*(\d{4,6})',  # "passcode: 123456"
-        r'(\d{4,6})[^\d]*$',  # OTP at end of message
-        r'(\d{4,6})\s+is\s+your',  # "123456 is your"
-        r'your\s+(\d{4,6})',  # "your 123456"
-    ]
     
     message_lower = message.lower()
     logging.info(f"Extracting OTP from message: {message}")
     
-    for pattern in patterns:
+    for pattern in OTP_PATTERNS:
         match = re.search(pattern, message_lower)
         if match:
             otp = match.group(1)
@@ -146,7 +120,7 @@ def extract_country_from_range(range_str):
     return None
 
 def detect_country_code(number, range_str=None):
-    """Detect country code from number and range string"""
+    """Detect country code from number and range string using config prefixes"""
     # First try to detect from range string
     if range_str:
         country_code = extract_country_from_range(range_str)
@@ -156,19 +130,8 @@ def detect_country_code(number, range_str=None):
     # Then try to detect from number prefix
     number = clean_number(str(number))
     
-    # Known country prefixes
-    country_prefixes = {
-        '591': 'bo',  # Bolivia
-        '51': 'pe',   # Peru
-        '1': 'us',    # USA
-        '44': 'gb',   # UK
-        '91': 'in',   # India
-        '966': 'sa',  # Saudi Arabia
-        '94': 'lk',   # Sri Lanka
-    }
-    
-    # Check if number starts with known prefix
-    for prefix, code in country_prefixes.items():
+    # Check if number starts with known prefix from config
+    for prefix, code in COUNTRY_PREFIXES.items():
         if number.startswith(prefix):
             return code
     
@@ -344,9 +307,9 @@ async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("❌ Error checking channel membership. Please try again.", show_alert=True)
 
 async def create_user_cache(user_id, user_data):
-    """Create a cache file for verified user"""
+    """Create a cache file for verified user using config directory"""
     try:
-        cache_dir = "user_cache"
+        cache_dir = USER_CACHE_DIR
         if not os.path.exists(cache_dir):
             os.makedirs(cache_dir)
         
@@ -380,7 +343,7 @@ async def is_user_verified(user_id, context):
                 return True
         
         # Then check cache file
-        cache_file = os.path.join("user_cache", f"user_{user_id}.json")
+        cache_file = os.path.join(USER_CACHE_DIR, f"user_{user_id}.json")
         if os.path.exists(cache_file):
             return True
         
