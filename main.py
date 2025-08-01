@@ -1030,6 +1030,52 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Active Monitors: {list(active_number_monitors.keys())}"
     )
 
+async def cleanup_used_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clean up numbers that have received OTPs"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        return
+    
+    await update.message.reply_text("🧹 Starting cleanup of numbers with OTPs...")
+    
+    db = context.bot_data["db"]
+    coll = db[COLLECTION_NAME]
+    countries_coll = db[COUNTRIES_COLLECTION]
+    
+    # Get all numbers from database
+    all_numbers = await coll.find({}).to_list(length=None)
+    deleted_count = 0
+    kept_count = 0
+    
+    for num_data in all_numbers:
+        phone_number = num_data["number"]
+        country_code = num_data["country_code"]
+        
+        # Check if this number has received any OTPs
+        sms_info = await get_latest_sms_for_number(phone_number)
+        
+        if sms_info and sms_info['otp']:
+            # This number has received an OTP, delete it
+            await coll.delete_one({"number": phone_number})
+            
+            # Update country count
+            await countries_coll.update_one(
+                {"country_code": country_code},
+                {"$inc": {"number_count": -1}}
+            )
+            
+            deleted_count += 1
+            logging.info(f"Cleaned up number {phone_number} with OTP: {sms_info['otp']}")
+        else:
+            kept_count += 1
+    
+    await update.message.reply_text(
+        f"✅ Cleanup completed!\n\n"
+        f"🗑️ Deleted {deleted_count} numbers with OTPs\n"
+        f"✅ Kept {kept_count} numbers without OTPs\n"
+        f"📊 Total processed: {deleted_count + kept_count}"
+    )
+
 async def list_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List all numbers in database"""
     user_id = update.effective_user.id
@@ -1696,6 +1742,7 @@ def main():
     app.add_handler(CommandHandler("stats", show_stats))
     app.add_handler(CommandHandler("list", list_numbers))
     app.add_handler(CommandHandler("addlist", addlist))
+    app.add_handler(CommandHandler("cleanup", cleanup_used_numbers))
     app.add_handler(CallbackQueryHandler(check_join, pattern="check_join"))
     app.add_handler(CallbackQueryHandler(request_number, pattern="request_number"))
     app.add_handler(CallbackQueryHandler(send_number, pattern="^country_"))
