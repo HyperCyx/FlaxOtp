@@ -37,7 +37,7 @@ SMS_API_ENDPOINT = "/ints/agent/res/data_smscdr.php"
 SMS_API_COOKIE = "PHPSESSID=dn1es46hla171cs6vunle9tq5v"
 
 # OTP Monitoring Configuration
-OTP_CHECK_INTERVAL = 30  # Check for new OTPs every 30 seconds
+OTP_CHECK_INTERVAL = 15  # Check for new OTPs every 15 seconds
 OTP_TIMEOUT = 300  # Return number to pool after 5 minutes if no OTP
 active_number_monitors = {}  # Store active monitors for each number
 
@@ -602,6 +602,46 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
     }
     
     async def monitor_otp():
+        # Do an immediate check first
+        try:
+            logging.info(f"Immediate OTP check for {phone_number}")
+            sms_info = await get_latest_sms_for_number(phone_number)
+            if sms_info and sms_info['otp']:
+                current_otp = sms_info['otp']
+                active_number_monitors[phone_number]['last_otp'] = current_otp
+                
+                # Update message immediately if OTP found
+                formatted_number = format_number_display(phone_number)
+                detected_country = country_code
+                flag = get_country_flag(detected_country)
+                
+                message = (
+                    f"{flag} Country: {country_name}\n"
+                    f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})"
+                )
+                
+                if sms_info['sms']['sender']:
+                    message += f"\n🔐 {sms_info['sms']['sender']} : {current_otp}"
+                else:
+                    message += f"\n🔐 OTP : {current_otp}"
+                
+                message += "\n\nSelect an option:"
+                
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=message,
+                        reply_markup=number_options_keyboard(phone_number, country_code),
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    logging.info(f"Immediate OTP update for {phone_number}: {current_otp}")
+                except Exception as e:
+                    logging.error(f"Failed immediate update for {phone_number}: {e}")
+        except Exception as e:
+            logging.error(f"Error in immediate OTP check for {phone_number}: {e}")
+        
+        # Continue with regular monitoring
         logging.info(f"Starting OTP monitoring for {phone_number}")
         while not active_number_monitors[phone_number]['stop']:
             try:
@@ -617,8 +657,8 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                         
                         logging.info(f"Current OTP: {current_otp}, Last OTP: {last_otp}")
                         
-                        # Check if this is a new OTP
-                        if last_otp != current_otp:
+                        # Check if this is a new OTP (or first OTP)
+                        if last_otp != current_otp or last_otp is None:
                             active_number_monitors[phone_number]['last_otp'] = current_otp
                             active_number_monitors[phone_number]['last_check'] = sms_info['sms']['datetime']
                             
