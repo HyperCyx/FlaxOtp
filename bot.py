@@ -369,7 +369,7 @@ async def countries_keyboard(db):
 
 def number_options_keyboard(number, country_code):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Change", callback_data=f"change_{country_code}")],
+        # [InlineKeyboardButton("🔄 Change", callback_data=f"change_{country_code}")],  # TEMPORARILY SUSPENDED
         [InlineKeyboardButton("📩 Show SMS", callback_data=f"sms_{number}")],
         [InlineKeyboardButton("📋 Menu", callback_data="menu")]
     ])
@@ -630,6 +630,7 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # TEMPORARILY SUSPENDED - Function kept intact for future reactivation
     query = update.callback_query
     await query.answer()
     country_code = query.data.split('_', 1)[1]
@@ -2681,7 +2682,7 @@ def main():
     app.add_handler(CallbackQueryHandler(check_join, pattern="check_join"))
     app.add_handler(CallbackQueryHandler(request_number, pattern="request_number"))
     app.add_handler(CallbackQueryHandler(send_number, pattern="^country_"))
-    app.add_handler(CallbackQueryHandler(change_number, pattern="^change_"))
+    # app.add_handler(CallbackQueryHandler(change_number, pattern="^change_"))  # TEMPORARILY SUSPENDED
     app.add_handler(CallbackQueryHandler(show_sms, pattern="^sms_"))
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(MessageHandler(filters.Document.FileExtension("csv") & filters.User(ADMIN_IDS), upload_csv))
