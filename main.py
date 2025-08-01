@@ -35,7 +35,7 @@ ADMIN_IDS = {7762548831}
 # SMS API Configuration
 SMS_API_BASE_URL = "http://51.83.103.80"
 SMS_API_ENDPOINT = "/ints/agent/res/data_smscdr.php"
-SMS_API_COOKIE = "PHPSESSID=dn1es46hla171cs6vunle9tq5v"
+SMS_API_COOKIE = "PHPSESSID=dn1es46hla171cs6vunle9tq5v"  # This needs to be updated with a fresh session
 
 # OTP Monitoring Configuration
 OTP_CHECK_INTERVAL = 5  # Check for new OTPs every 5 seconds
@@ -952,14 +952,21 @@ async def check_sms_for_number(phone_number, date_str=None):
                     content_type = response.headers.get('content-type', '')
                     logging.info(f"Content-Type: {content_type}")
                     
+                    # Get response text first to check for login redirect
+                    response_text = await response.text()
+                    
+                    # Check if we got redirected to login page
+                    if 'login' in response_text.lower() or 'msi sms | login' in response_text.lower():
+                        logging.error(f"❌ SMS API session expired - redirected to login page")
+                        logging.error(f"🔑 Need to update SMS_API_COOKIE with fresh session")
+                        return None
+                    
                     if 'application/json' in content_type or 'text/html' in content_type:
                         try:
                             data = await response.json()
                             logging.info(f"API response data: {data}")
                             return data
                         except Exception as json_error:
-                            # If JSON parsing fails, try to get the text and parse manually
-                            response_text = await response.text()
                             logging.error(f"JSON parsing failed: {json_error}")
                             logging.info(f"Response text: {response_text[:500]}...")  # Log first 500 chars
                             
@@ -979,7 +986,6 @@ async def check_sms_for_number(phone_number, date_str=None):
                             
                             return None
                     else:
-                        response_text = await response.text()
                         logging.error(f"Unexpected content type: {content_type}")
                         logging.info(f"Response text: {response_text[:500]}...")
                         return None
@@ -1455,6 +1461,38 @@ async def show_my_morning_calls(update: Update, context: ContextTypes.DEFAULT_TY
         status_text += f"   🕐 Started: {start_time.strftime('%H:%M:%S')}\n\n"
     
     await update.message.reply_text(status_text)
+
+async def update_sms_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Update SMS API session cookie"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        return
+    
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "🔑 SMS API Session Update\n\n"
+            "Usage: /updatesms <new_session_cookie>\n\n"
+            "Example: /updatesms PHPSESSID=abc123def456\n\n"
+            "⚠️ Current session appears to be expired.\n"
+            "🔍 Get fresh session from your SMS panel."
+        )
+        return
+    
+    new_cookie = args[0]
+    if not new_cookie.startswith("PHPSESSID="):
+        await update.message.reply_text("❌ Invalid session cookie format. Must start with 'PHPSESSID='")
+        return
+    
+    # Update the global variable
+    global SMS_API_COOKIE
+    SMS_API_COOKIE = new_cookie
+    
+    await update.message.reply_text(
+        f"✅ SMS API session updated!\n\n"
+        f"🔑 New cookie: {new_cookie}\n\n"
+        f"🔄 Restart the bot to apply changes."
+    )
 
 async def reset_current_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reset current number tracking for debugging"""
@@ -2141,6 +2179,7 @@ def main():
     app.add_handler(CommandHandler("countrynumbers", check_country_numbers))
     app.add_handler(CommandHandler("resetnumber", reset_current_number))
     app.add_handler(CommandHandler("morningcalls", show_my_morning_calls))
+    app.add_handler(CommandHandler("updatesms", update_sms_session))
     app.add_handler(CallbackQueryHandler(check_join, pattern="check_join"))
     app.add_handler(CallbackQueryHandler(request_number, pattern="request_number"))
     app.add_handler(CallbackQueryHandler(send_number, pattern="^country_"))
