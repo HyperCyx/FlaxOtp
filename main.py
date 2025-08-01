@@ -660,48 +660,23 @@ async def show_sms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer("🔍 Checking for SMS messages...", show_alert=True)
     
     try:
-        # Check SMS for the number
-        sms_data = await check_sms_for_number(number)
+        # Get latest SMS and OTP
+        sms_info = await get_latest_sms_for_number(number)
         
-        if sms_data and 'aaData' in sms_data and sms_data['aaData']:
-            # Filter out summary rows and get actual SMS messages
-            sms_messages = []
-            for row in sms_data['aaData']:
-                if isinstance(row, list) and len(row) >= 6:
-                    # Check if this is a real SMS message (not a summary row)
-                    first_item = str(row[0])
-                    if not first_item.startswith('0.') and not ',' in first_item and len(first_item) > 10:
-                        sms_messages.append({
-                            'datetime': row[0],
-                            'range': row[1],
-                            'number': row[2],
-                            'sender': row[3] if len(row) > 3 else 'Unknown',
-                            'message': row[5] if len(row) > 5 else 'No message content'
-                        })
+        if sms_info and sms_info['otp']:
+            # Display compact OTP format
+            formatted_number = format_number_display(number)
+            message = f"📞 Number: {formatted_number}\n"
+            message += f"🔐 {sms_info['sms']['sender']} : {sms_info['otp']}"
             
-            if sms_messages:
-                # Format SMS messages
-                message = f"📱 **SMS Messages for {number}:**\n\n"
-                for i, sms in enumerate(sms_messages[:5], 1):  # Show first 5 messages
-                    message += f"📨 **Message {i}:**\n"
-                    message += f"🕐 **Time:** {sms['datetime']}\n"
-                    message += f"📞 **Number:** {sms['number']}\n"
-                    message += f"👤 **Sender:** {sms['sender']}\n"
-                    message += f"💬 **Message:** {sms['message']}\n\n"
-                
-                if len(sms_messages) > 5:
-                    message += f"📋 *... and {len(sms_messages) - 5} more messages*"
-                
-                # Send as a new message since alert has character limit
-                await context.bot.send_message(
-                    chat_id=query.from_user.id,
-                    text=message,
-                    parse_mode=ParseMode.MARKDOWN
-                )
-            else:
-                await query.answer("📭 No SMS messages found for this number today.", show_alert=True)
+            # Send as a new message
+            await context.bot.send_message(
+                chat_id=query.from_user.id,
+                text=message,
+                parse_mode=ParseMode.MARKDOWN
+            )
         else:
-            await query.answer("📭 No SMS messages found for this number today.", show_alert=True)
+            await query.answer("📭 No OTP found for this number today.", show_alert=True)
             
     except Exception as e:
         logging.error(f"Error in show_sms: {e}")
