@@ -475,11 +475,16 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     country_info = await countries_coll.find_one({"country_code": country_code})
     country_name = country_info["display_name"] if country_info else country_code
 
-    # Stop any active monitoring for this country
+    # Stop ALL active monitoring before getting new number
+    logging.info("Stopping all active OTP monitoring before changing number")
     for phone_number in list(active_number_monitors.keys()):
-        if phone_number in active_number_monitors:
-            await stop_otp_monitoring(phone_number)
+        await stop_otp_monitoring(phone_number)
+    
+    logging.info(f"All monitoring stopped. Getting new number for country: {country_code}")
 
+    # Small delay to ensure monitoring is properly stopped
+    await asyncio.sleep(1)
+    
     # Get a random number from the available numbers for this country
     pipeline = [
         {"$match": {"country_code": country_code}},
@@ -702,8 +707,12 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
 async def stop_otp_monitoring(phone_number):
     """Stop monitoring a phone number for OTPs"""
     if phone_number in active_number_monitors:
+        logging.info(f"Stopping OTP monitoring for {phone_number}")
         active_number_monitors[phone_number]['stop'] = True
         del active_number_monitors[phone_number]
+        logging.info(f"OTP monitoring stopped for {phone_number}")
+    else:
+        logging.info(f"No active monitoring found for {phone_number}")
 
 async def check_sms_for_number(phone_number, date_str=None):
     """Check SMS for a specific phone number using the API"""
@@ -1240,6 +1249,24 @@ async def force_otp_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.message.reply_text(f"❌ No OTP found for {phone_number}")
+
+async def check_monitoring_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check current OTP monitoring status"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        return
+    
+    if active_number_monitors:
+        status_text = "📊 Active OTP Monitoring:\n\n"
+        for phone_number, monitor_data in active_number_monitors.items():
+            status_text += f"📞 {phone_number}\n"
+            status_text += f"   Status: {'Running' if not monitor_data['stop'] else 'Stopping'}\n"
+            status_text += f"   Last OTP: {monitor_data['last_otp'] or 'None'}\n"
+            status_text += f"   Start Time: {monitor_data['start_time']}\n\n"
+    else:
+        status_text = "📊 No active OTP monitoring"
+    
+    await update.message.reply_text(status_text)
 
 async def list_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List all numbers in database"""
@@ -1909,6 +1936,7 @@ def main():
     app.add_handler(CommandHandler("addlist", addlist))
     app.add_handler(CommandHandler("cleanup", cleanup_used_numbers))
     app.add_handler(CommandHandler("forceotp", force_otp_check))
+    app.add_handler(CommandHandler("monitoring", check_monitoring_status))
     app.add_handler(CallbackQueryHandler(check_join, pattern="check_join"))
     app.add_handler(CallbackQueryHandler(request_number, pattern="request_number"))
     app.add_handler(CallbackQueryHandler(send_number, pattern="^country_"))
