@@ -229,6 +229,10 @@ async def notify_admins_api_recovery():
         logging.error(f"❌ Failed to send recovery notifications: {e}")
 
 # === UTILITY FUNCTIONS ===
+async def send_lol_message(update: Update):
+    """Send a fun message when users try to use admin commands"""
+    await update.message.reply_text("Lol")
+
 def extract_otp_from_message(message):
     """Extract OTP from SMS message using patterns from config"""
     if not message:
@@ -1292,7 +1296,7 @@ async def delete_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info(f"Delete country command called by user {user_id}")
     
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to delete numbers.")
+        await send_lol_message(update)
         return
 
     args = context.args
@@ -1354,7 +1358,7 @@ async def check_api_connection(update: Update, context: ContextTypes.DEFAULT_TYP
     logging.info(f"Check API connection command called by user {user_id}")
     
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to check API connection.")
+        await send_lol_message(update)
         return
 
     await update.message.reply_text("🔍 Checking SMS API connection...")
@@ -1505,7 +1509,7 @@ async def delete_all_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Delete all numbers from database"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to delete numbers.")
+        await send_lol_message(update)
         return
 
     # Ask for confirmation
@@ -1537,7 +1541,7 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show database statistics"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to view stats.")
+        await send_lol_message(update)
         return
 
     db = context.bot_data["db"]
@@ -1570,7 +1574,7 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Add command to enter numbers manually and upload CSV"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        await send_lol_message(update)
         return
 
     # Initialize user state
@@ -1595,6 +1599,7 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Test command for debugging"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
         return
     
     args = context.args
@@ -1632,6 +1637,7 @@ async def cleanup_used_numbers(update: Update, context: ContextTypes.DEFAULT_TYP
     """Clean up numbers that have received OTPs"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
         return
     
     await update.message.reply_text("🧹 Starting cleanup of numbers with OTPs...")
@@ -1678,6 +1684,7 @@ async def force_otp_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Force OTP check for a specific number"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
         return
     
     args = context.args
@@ -1706,6 +1713,7 @@ async def check_monitoring_status(update: Update, context: ContextTypes.DEFAULT_
     """Check current OTP monitoring status"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
         return
     
     if active_number_monitors:
@@ -1724,6 +1732,7 @@ async def check_country_numbers(update: Update, context: ContextTypes.DEFAULT_TY
     """Check how many numbers are available for each country"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
         return
     
     db = context.bot_data["db"]
@@ -1778,6 +1787,7 @@ async def update_sms_session(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Update SMS API session cookie"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
         return
     
     args = context.args
@@ -1882,6 +1892,7 @@ async def reload_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reload SMS API session from config file"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
         return
     
     await update.message.reply_text("🔄 Reloading session from config file...")
@@ -1927,7 +1938,7 @@ async def list_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info(f"List numbers command called by user {user_id}")
     
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to view numbers.")
+        await send_lol_message(update)
         return
 
     args = context.args
@@ -2023,7 +2034,7 @@ async def upload_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global uploaded_csv
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to upload files.")
+        await send_lol_message(update)
         return
 
     if not update.message.document:
@@ -2066,7 +2077,7 @@ async def addlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global uploaded_csv
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to perform this command.")
+        await send_lol_message(update)
         return
 
     if not uploaded_csv:
@@ -2385,6 +2396,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
     
     if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
         return
     
     if user_id in user_states:
