@@ -46,6 +46,7 @@ logging.basicConfig(level=logging.INFO)
 uploaded_csv = None
 user_states = {}  # Store user states for country input
 manual_numbers = {}  # Store manual numbers for each user
+current_user_numbers = {}  # Track current number for each user
 
 # === UTILITY FUNCTIONS ===
 def extract_otp_from_message(message):
@@ -420,6 +421,11 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         number = result["number"]
         formatted_number = format_number_display(number)
         
+        # Track current number for this user
+        user_id = query.from_user.id
+        current_user_numbers[user_id] = number
+        logging.info(f"Updated current number for user {user_id}: {number}")
+        
         # Use detected country for flag if available
         detected_country = result.get("detected_country", country_code)
         flag = get_country_flag(detected_country)
@@ -485,11 +491,27 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Small delay to ensure monitoring is properly stopped
     await asyncio.sleep(1)
     
-    # Get a random number from the available numbers for this country
-    pipeline = [
-        {"$match": {"country_code": country_code}},
-        {"$sample": {"size": 1}}
-    ]
+    # Get current number for this user to exclude it
+    user_id = query.from_user.id
+    current_number = current_user_numbers.get(user_id)
+    logging.info(f"Current number for user {user_id}: {current_number}")
+    
+    # Get a different random number from the available numbers for this country
+    if current_number:
+        # Exclude current number and get a different one
+        pipeline = [
+            {"$match": {"country_code": country_code, "number": {"$ne": current_number}}},
+            {"$sample": {"size": 1}}
+        ]
+        logging.info(f"Trying to get different number, excluding: {current_number}")
+    else:
+        # No current number, get any random number
+        pipeline = [
+            {"$match": {"country_code": country_code}},
+            {"$sample": {"size": 1}}
+        ]
+        logging.info("No current number to exclude, getting any random number")
+    
     results = await coll.aggregate(pipeline).to_list(length=1)
     result = results[0] if results else None
     
@@ -504,6 +526,11 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if result and "number" in result:
         number = result["number"]
         formatted_number = format_number_display(number)
+        
+        # Track current number for this user
+        user_id = query.from_user.id
+        current_user_numbers[user_id] = number
+        logging.info(f"Updated current number for user {user_id}: {number}")
         
         # Use detected country for flag if available
         detected_country = result.get("detected_country", country_code)
@@ -542,14 +569,20 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context
         )
     else:
-        # No numbers available for this country, show all available countries
-        keyboard = await countries_keyboard(db)
-        await query.edit_message_text(
-            f"⚠️ No more numbers available for {country_name}.\n"
-            f"📱 All numbers for this country have been used (received OTPs).\n\n"
-            f"🌍 Please select another country:",
-            reply_markup=keyboard
-        )
+        # No different numbers available for this country
+        if current_number:
+            # Try to get the same number if no different one is available
+            logging.info(f"No different number available, keeping current: {current_number}")
+            await query.answer("⚠️ No different number available for this country. Try another country.", show_alert=True)
+        else:
+            # No numbers available at all
+            keyboard = await countries_keyboard(db)
+            await query.edit_message_text(
+                f"⚠️ No numbers available for {country_name}.\n"
+                f"📱 All numbers for this country have been used (received OTPs).\n\n"
+                f"🌍 Please select another country:",
+                reply_markup=keyboard
+            )
 
 async def get_latest_sms_for_number(phone_number, date_str=None):
     """Get the latest SMS for a phone number and extract OTP"""
@@ -1268,6 +1301,33 @@ async def check_monitoring_status(update: Update, context: ContextTypes.DEFAULT_
     
     await update.message.reply_text(status_text)
 
+async def check_country_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check how many numbers are available for each country"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        return
+    
+    db = context.bot_data["db"]
+    coll = db[COLLECTION_NAME]
+    countries_coll = db[COUNTRIES_COLLECTION]
+    
+    # Get all countries
+    countries = await countries_coll.find({}).to_list(length=None)
+    
+    status_text = "📊 Numbers Available by Country:\n\n"
+    
+    for country in countries:
+        country_code = country["country_code"]
+        country_name = country["display_name"]
+        
+        # Count numbers for this country
+        count = await coll.count_documents({"country_code": country_code})
+        
+        status_text += f"🌍 {country_name} ({country_code})\n"
+        status_text += f"   📱 Available: {count} numbers\n\n"
+    
+    await update.message.reply_text(status_text)
+
 async def list_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List all numbers in database"""
     user_id = update.effective_user.id
@@ -1937,6 +1997,7 @@ def main():
     app.add_handler(CommandHandler("cleanup", cleanup_used_numbers))
     app.add_handler(CommandHandler("forceotp", force_otp_check))
     app.add_handler(CommandHandler("monitoring", check_monitoring_status))
+    app.add_handler(CommandHandler("countrynumbers", check_country_numbers))
     app.add_handler(CallbackQueryHandler(check_join, pattern="check_join"))
     app.add_handler(CallbackQueryHandler(request_number, pattern="request_number"))
     app.add_handler(CallbackQueryHandler(send_number, pattern="^country_"))
