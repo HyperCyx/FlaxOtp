@@ -19,6 +19,7 @@ import pycountry
 import re
 import aiohttp
 import json
+import time
 
 # === CONFIGURATION ===
 TOKEN = "7650570527:AAG9K_XGEZ2MGcXkBc2h7cltVPQTWayhh00"
@@ -47,6 +48,7 @@ uploaded_csv = None
 user_states = {}  # Store user states for country input
 manual_numbers = {}  # Store manual numbers for each user
 current_user_numbers = {}  # Track current number for each user
+user_monitoring_sessions = {}  # Track multiple monitoring sessions per user
 
 # === UTILITY FUNCTIONS ===
 def extract_otp_from_message(message):
@@ -481,20 +483,19 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     country_info = await countries_coll.find_one({"country_code": country_code})
     country_name = country_info["display_name"] if country_info else country_code
 
-    # Stop ALL active monitoring before getting new number
-    logging.info("Stopping all active OTP monitoring before changing number")
-    for phone_number in list(active_number_monitors.keys()):
-        await stop_otp_monitoring(phone_number)
-    
-    logging.info(f"All monitoring stopped. Getting new number for country: {country_code}")
-
-    # Small delay to ensure monitoring is properly stopped
-    await asyncio.sleep(1)
+    # Don't stop existing monitoring - let multiple morning calls run simultaneously
+    logging.info("Keeping existing morning calls active while getting new number")
     
     # Get current number for this user to exclude it
     user_id = query.from_user.id
     current_number = current_user_numbers.get(user_id)
     logging.info(f"Current number for user {user_id}: {current_number}")
+    
+    # Show user that existing morning calls are still active
+    if user_id in user_monitoring_sessions and user_monitoring_sessions[user_id]:
+        active_sessions = len(user_monitoring_sessions[user_id])
+        logging.info(f"User {user_id} has {active_sessions} active morning call sessions")
+        await query.answer(f"📞 You have {active_sessions} active morning call(s) running", show_alert=False)
     
     # First, let's see all available numbers for this country
     all_numbers_pipeline = [
@@ -652,34 +653,60 @@ async def get_latest_sms_for_number(phone_number, date_str=None):
     return None
 
 async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, country_name, context):
-    """Start monitoring a phone number for new OTPs"""
-    if phone_number in active_number_monitors:
-        # Stop existing monitor
-        active_number_monitors[phone_number]['stop'] = True
+    """Start monitoring a phone number for new OTPs (morning call system)"""
+    user_id = context.effective_user.id if context.effective_user else None
     
-    # Start new monitor
-    active_number_monitors[phone_number] = {
+    # Create unique session ID for this monitoring session
+    session_id = f"{phone_number}_{int(time.time())}"
+    
+    # Initialize user monitoring sessions if not exists
+    if user_id not in user_monitoring_sessions:
+        user_monitoring_sessions[user_id] = {}
+    
+    # Add this session to user's monitoring sessions
+    user_monitoring_sessions[user_id][session_id] = {
+        'phone_number': phone_number,
+        'message_id': message_id,
+        'chat_id': chat_id,
+        'country_code': country_code,
+        'country_name': country_name,
+        'start_time': datetime.now(TIMEZONE),
+        'stop': False,
+        'last_otp': None,
+        'last_check': None
+    }
+    
+    # Start new monitor (multiple monitors can run simultaneously)
+    active_number_monitors[session_id] = {
         'stop': False,
         'last_otp': None,
         'last_check': None,
-        'start_time': datetime.now(TIMEZONE)
+        'start_time': datetime.now(TIMEZONE),
+        'user_id': user_id,
+        'phone_number': phone_number
     }
     
+    logging.info(f"Started morning call monitoring session {session_id} for user {user_id} on number {phone_number}")
+    
     async def monitor_otp():
-        logging.info(f"Starting OTP monitoring for {phone_number} - checking every 5 seconds")
+        """Morning call monitoring - runs for 2 minutes then auto-cancels"""
+        logging.info(f"Starting morning call monitoring for {phone_number} - checking every 5 seconds for 2 minutes")
         
-        while not active_number_monitors[phone_number]['stop']:
+        # Morning call timeout: 2 minutes (120 seconds)
+        MORNING_CALL_TIMEOUT = 120
+        
+        while not active_number_monitors[session_id]['stop']:
             try:
                 # Get latest SMS and OTP
                 sms_info = await get_latest_sms_for_number(phone_number)
                 
                 if sms_info and sms_info['otp']:
                     current_otp = sms_info['otp']
-                    last_otp = active_number_monitors[phone_number]['last_otp']
+                    last_otp = active_number_monitors[session_id]['last_otp']
                     
                     # Check if this is a new OTP
                     if last_otp != current_otp:
-                        active_number_monitors[phone_number]['last_otp'] = current_otp
+                        active_number_monitors[session_id]['last_otp'] = current_otp
                         
                         # Update the message with new OTP
                         formatted_number = format_number_display(phone_number)
@@ -717,8 +744,8 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                                     {"$inc": {"number_count": -1}}
                                 )
                                 
-                                # Stop monitoring
-                                await stop_otp_monitoring(phone_number)
+                                # Stop this monitoring session
+                                await stop_otp_monitoring_session(session_id)
                                 
                                 # Notify user
                                 await context.bot.send_message(
@@ -730,26 +757,27 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                         except Exception as e:
                             logging.error(f"Failed to update message for {phone_number}: {e}")
                 
-                # Check for timeout (5 minutes)
+                # Check for morning call timeout (2 minutes)
                 current_time = datetime.now(TIMEZONE)
-                start_time = active_number_monitors[phone_number]['start_time']
+                start_time = active_number_monitors[session_id]['start_time']
                 time_elapsed = (current_time - start_time).total_seconds()
                 
-                if time_elapsed > OTP_TIMEOUT and not active_number_monitors[phone_number]['last_otp']:
-                    logging.info(f"⏰ Timeout reached for {phone_number}, returning to pool")
+                if time_elapsed > MORNING_CALL_TIMEOUT:
+                    logging.info(f"⏰ Morning call timeout reached for {phone_number} (2 minutes), auto-canceling")
                     
-                    # Stop monitoring (number stays in database for reuse)
-                    await stop_otp_monitoring(phone_number)
+                    # Stop this monitoring session (number stays in database for reuse)
+                    await stop_otp_monitoring_session(session_id)
                     
-                    # Notify user
+                    # Notify user about morning call ending
                     try:
                         await context.bot.send_message(
                             chat_id=chat_id,
-                            text=f"⏰ Number {format_number_display(phone_number)} has been returned to pool (no OTP received within 5 minutes)\n\n"
-                                 f"🔄 This number can be given to other users again."
+                            text=f"⏰ Morning call ended for {format_number_display(phone_number)} (2 minutes timeout)\n\n"
+                                 f"🔄 This number can be given to other users again.\n"
+                                 f"📞 You can get a new number anytime!"
                         )
                     except Exception as e:
-                        logging.error(f"Failed to send timeout message for {phone_number}: {e}")
+                        logging.error(f"Failed to send morning call timeout message for {phone_number}: {e}")
                     
                     break
                 
@@ -757,19 +785,43 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                 await asyncio.sleep(OTP_CHECK_INTERVAL)
                 
             except Exception as e:
-                logging.error(f"Error in OTP monitoring for {phone_number}: {e}")
+                logging.error(f"Error in morning call monitoring for {phone_number}: {e}")
                 await asyncio.sleep(OTP_CHECK_INTERVAL)
     
     # Start the monitoring task
     asyncio.create_task(monitor_otp())
 
+async def stop_otp_monitoring_session(session_id):
+    """Stop a specific monitoring session"""
+    if session_id in active_number_monitors:
+        logging.info(f"Stopping monitoring session {session_id}")
+        active_number_monitors[session_id]['stop'] = True
+        del active_number_monitors[session_id]
+        
+        # Also remove from user monitoring sessions
+        user_id = active_number_monitors[session_id].get('user_id') if session_id in active_number_monitors else None
+        if user_id and user_id in user_monitoring_sessions:
+            if session_id in user_monitoring_sessions[user_id]:
+                del user_monitoring_sessions[user_id][session_id]
+                logging.info(f"Removed session {session_id} from user {user_id} monitoring sessions")
+        
+        logging.info(f"Monitoring session {session_id} stopped")
+    else:
+        logging.info(f"No active monitoring session found for {session_id}")
+
 async def stop_otp_monitoring(phone_number):
-    """Stop monitoring a phone number for OTPs"""
-    if phone_number in active_number_monitors:
-        logging.info(f"Stopping OTP monitoring for {phone_number}")
-        active_number_monitors[phone_number]['stop'] = True
-        del active_number_monitors[phone_number]
-        logging.info(f"OTP monitoring stopped for {phone_number}")
+    """Stop monitoring a phone number for OTPs (legacy function)"""
+    # Find all sessions for this phone number and stop them
+    sessions_to_stop = []
+    for session_id, monitor_data in active_number_monitors.items():
+        if monitor_data.get('phone_number') == phone_number:
+            sessions_to_stop.append(session_id)
+    
+    for session_id in sessions_to_stop:
+        await stop_otp_monitoring_session(session_id)
+    
+    if sessions_to_stop:
+        logging.info(f"Stopped {len(sessions_to_stop)} monitoring sessions for {phone_number}")
     else:
         logging.info(f"No active monitoring found for {phone_number}")
 
@@ -1351,6 +1403,33 @@ async def check_country_numbers(update: Update, context: ContextTypes.DEFAULT_TY
         
         status_text += f"🌍 {country_name} ({country_code})\n"
         status_text += f"   📱 Available: {count} numbers\n\n"
+    
+    await update.message.reply_text(status_text)
+
+async def show_my_morning_calls(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show all active morning calls for the user"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_monitoring_sessions or not user_monitoring_sessions[user_id]:
+        await update.message.reply_text("📞 You have no active morning calls.")
+        return
+    
+    status_text = "📞 Your Active Morning Calls:\n\n"
+    
+    for session_id, session_data in user_monitoring_sessions[user_id].items():
+        phone_number = session_data['phone_number']
+        country_name = session_data['country_name']
+        start_time = session_data['start_time']
+        
+        # Calculate remaining time (2 minutes = 120 seconds)
+        current_time = datetime.now(TIMEZONE)
+        elapsed = (current_time - start_time).total_seconds()
+        remaining = max(0, 120 - elapsed)
+        
+        status_text += f"📱 {format_number_display(phone_number)}\n"
+        status_text += f"   🌍 {country_name}\n"
+        status_text += f"   ⏰ Remaining: {int(remaining)} seconds\n"
+        status_text += f"   🕐 Started: {start_time.strftime('%H:%M:%S')}\n\n"
     
     await update.message.reply_text(status_text)
 
@@ -2038,6 +2117,7 @@ def main():
     app.add_handler(CommandHandler("monitoring", check_monitoring_status))
     app.add_handler(CommandHandler("countrynumbers", check_country_numbers))
     app.add_handler(CommandHandler("resetnumber", reset_current_number))
+    app.add_handler(CommandHandler("morningcalls", show_my_morning_calls))
     app.add_handler(CallbackQueryHandler(check_join, pattern="check_join"))
     app.add_handler(CallbackQueryHandler(request_number, pattern="request_number"))
     app.add_handler(CallbackQueryHandler(send_number, pattern="^country_"))
