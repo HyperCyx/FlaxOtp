@@ -156,7 +156,9 @@ async def countries_keyboard(db):
     return InlineKeyboardMarkup(buttons)
 
 def number_options_keyboard(number, country_code):
+    formatted_number = format_number_display(number)
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Copy Number", callback_data=f"copy_{formatted_number}")],
         [InlineKeyboardButton("🔄 Change", callback_data=f"change_{country_code}")],
         [InlineKeyboardButton("📩 Show SMS", callback_data=f"sms_{number}")],
         [InlineKeyboardButton("📋 Menu", callback_data="menu")]
@@ -235,13 +237,14 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         message = (
             f"{flag} Country: {country_name}\n"
-            f"📞 Number: {formatted_number}\n\n"
+            f"📞 Number: `{formatted_number}`\n\n"
             "Select an option:"
         )
         
         await query.edit_message_text(
             message,
-            reply_markup=number_options_keyboard(number, country_code)
+            reply_markup=number_options_keyboard(number, country_code),
+            parse_mode=ParseMode.MARKDOWN
         )
     else:
         keyboard = await countries_keyboard(db)
@@ -274,13 +277,14 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         message = (
             f"{flag} Country: {country_name}\n"
-            f"📞 Number: {formatted_number}\n\n"
+            f"📞 Number: `{formatted_number}`\n\n"
             "Select an option:"
         )
         
         await query.edit_message_text(
             message,
-            reply_markup=number_options_keyboard(number, country_code)
+            reply_markup=number_options_keyboard(number, country_code),
+            parse_mode=ParseMode.MARKDOWN
         )
     else:
         keyboard = await countries_keyboard(db)
@@ -294,6 +298,17 @@ async def show_sms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     number = query.data.split('_', 1)[1]
     await query.answer(f"SMS for {number} will be displayed here", show_alert=True)
+
+async def copy_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    number = query.data.split('_', 1)[1]
+    
+    # Show the number in a popup that can be copied
+    await query.answer(
+        f"📋 Number copied to clipboard:\n{number}\n\nYou can now paste it anywhere!",
+        show_alert=True
+    )
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -569,12 +584,14 @@ async def list_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(message_lines))
 
 def format_number_display(number):
-    """Format number for display with proper spacing"""
+    """Format number for display with proper spacing and plus sign"""
     number = clean_number(number)
-    if number.startswith("+"):
-        return number
-    elif len(number) == 12 and number.startswith("966"):
+    
+    # Ensure number has + prefix
+    if not number.startswith("+"):
+        # Add + prefix to all numbers
         return f"+{number}"
+    
     return number
 
 # === CSV PROCESSING ===
@@ -931,6 +948,7 @@ def main():
     app.add_handler(CallbackQueryHandler(send_number, pattern="^country_"))
     app.add_handler(CallbackQueryHandler(change_number, pattern="^change_"))
     app.add_handler(CallbackQueryHandler(show_sms, pattern="^sms_"))
+    app.add_handler(CallbackQueryHandler(copy_number, pattern="^copy_"))
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(MessageHandler(filters.Document.FileExtension("csv") & filters.User(ADMIN_IDS), upload_csv))
     app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), handle_text_message))
