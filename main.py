@@ -462,7 +462,8 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query.message.chat_id, 
             country_code, 
             country_name, 
-            context
+            context,
+            query.from_user.id
         )
     else:
         keyboard = await countries_keyboard(db)
@@ -589,7 +590,8 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query.message.chat_id, 
             country_code, 
             country_name, 
-            context
+            context,
+            user_id
         )
     else:
         # No different numbers available for this country
@@ -652,9 +654,14 @@ async def get_latest_sms_for_number(phone_number, date_str=None):
     
     return None
 
-async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, country_name, context):
+async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, country_name, context, user_id=None):
     """Start monitoring a phone number for new OTPs (morning call system)"""
-    user_id = context.effective_user.id if context.effective_user else None
+    if user_id is None:
+        user_id = context.effective_user.id if context.effective_user else None
+    
+    if user_id is None:
+        logging.error(f"Cannot start monitoring for {phone_number}: user_id is None")
+        return
     
     # Create unique session ID for this monitoring session
     session_id = f"{phone_number}_{int(time.time())}"
@@ -687,6 +694,8 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
     }
     
     logging.info(f"Started morning call monitoring session {session_id} for user {user_id} on number {phone_number}")
+    logging.info(f"Active monitors count: {len(active_number_monitors)}")
+    logging.info(f"User monitoring sessions for user {user_id}: {len(user_monitoring_sessions.get(user_id, {}))}")
     
     async def monitor_otp():
         """Morning call monitoring - runs for 2 minutes then auto-cancels"""
