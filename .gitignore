@@ -1,0 +1,85 @@
+# === SENSITIVE CONFIGURATION ===
+config.py
+*.key
+*.pem
+*.env
+.env
+secrets/
+credentials/
+
+# === LOGS AND CACHE ===
+*.log
+bot.log
+user_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# === VIRTUAL ENVIRONMENTS ===
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+telegram-bot-env/
+
+# === DEVELOPMENT ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# === TEMPORARY FILES ===
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+
+# === PYTHON ===
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# === DATABASE ===
+*.db
+*.sqlite3
+*.sqlite
+dump.rdb
+
+# === SYSTEM ===
+.nohup.out
+nohup.out
+core
+*.core
+
+# === UPLOADS ===
+uploads/
+files/
+csv_uploads/
+
+# === DOCUMENTATION BUILDS ===
+docs/_build/
+docs/.doctrees/
+
+# === IDE ===
+.sublime-project
+.sublime-workspace
+*.sublime-*
+
+# === DOCKER ===
+.dockerignore
+Dockerfile.dev
+docker-compose.override.yml
+
+# === BACKUP FILES ===
+*.orig
+*.rej

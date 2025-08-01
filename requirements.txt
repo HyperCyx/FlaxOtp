@@ -1,0 +1,40 @@
+# === TELEGRAM BOT DEPENDENCIES ===
+python-telegram-bot==22.3
+telegram==0.0.1
+
+# === DATABASE DEPENDENCIES ===
+motor==3.7.1
+pymongo==4.10.1
+
+# === HTTP CLIENT DEPENDENCIES ===
+aiohttp==3.12.15
+httpx==0.28.1
+
+# === TIMEZONE DEPENDENCIES ===
+pytz==2025.2
+
+# === COUNTRY CODE DEPENDENCIES ===
+pycountry==24.6.1
+
+# === ASYNC DEPENDENCIES ===
+asyncio==3.4.3
+
+# === UTILITY DEPENDENCIES ===
+python-dateutil==2.9.0
+
+# === JSON & DATA PROCESSING ===
+ujson==5.10.0
+
+# === DEVELOPMENT DEPENDENCIES (Optional) ===
+# black==24.10.0
+# flake8==7.1.1
+# pytest==8.3.4
+# pytest-asyncio==0.24.0
+
+# === SYSTEM REQUIREMENTS ===
+# Python 3.8+ required
+# MongoDB 4.4+ recommended
+
+# === INSTALLATION NOTES ===
+# Install with: pip3 install -r requirements.txt
+# For development: pip3 install -r requirements.txt black flake8 pytest pytest-asyncio
