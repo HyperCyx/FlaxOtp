@@ -2246,15 +2246,62 @@ async def background_otp_cleanup_task(app):
                             
                             logging.info(f"🗑️ Background cleanup: Deleted {phone_number} after detecting OTP: {otp}")
                             
+                            # Send OTP notification to any users who had this number
+                            users_notified = 0
+                            for user_id, user_sessions in user_monitoring_sessions.items():
+                                for session_id, session_data in user_sessions.items():
+                                    if session_data.get('phone_number') == phone_number:
+                                        try:
+                                            await app.bot.send_message(
+                                                chat_id=user_id,
+                                                text=f"📞 Number: {formatted_number}\n🔐 {sender} : {otp}"
+                                            )
+                                            users_notified += 1
+                                            logging.info(f"📱 Background cleanup: Sent OTP notification to user {user_id}")
+                                        except Exception as notify_error:
+                                            logging.error(f"Failed to notify user {user_id}: {notify_error}")
+                                        break  # Only notify each user once
+                            
+                            # Stop any active monitoring sessions for this number
+                            sessions_stopped = 0
+                            sessions_to_remove = []
+                            
+                            for session_id, session_data in active_number_monitors.items():
+                                if session_data.get('phone_number') == phone_number:
+                                    logging.info(f"🛑 Background cleanup: Stopping monitoring session {session_id} for {phone_number}")
+                                    session_data['stop'] = True
+                                    sessions_to_remove.append(session_id)
+                                    sessions_stopped += 1
+                            
+                            # Remove stopped sessions from active monitors
+                            for session_id in sessions_to_remove:
+                                if session_id in active_number_monitors:
+                                    del active_number_monitors[session_id]
+                            
+                            # Also clean up user monitoring sessions
+                            for user_id, user_sessions in user_monitoring_sessions.items():
+                                user_sessions_to_remove = []
+                                for session_id, session_data in user_sessions.items():
+                                    if session_data.get('phone_number') == phone_number:
+                                        logging.info(f"🛑 Background cleanup: Removing user session {session_id} for user {user_id}")
+                                        user_sessions_to_remove.append(session_id)
+                                
+                                # Remove user sessions
+                                for session_id in user_sessions_to_remove:
+                                    if session_id in user_sessions:
+                                        del user_sessions[session_id]
+                            
                             # Send notification to all admins about the cleanup
                             for admin_id in ADMIN_IDS:
                                 try:
+                                    session_info = f"\n🛑 Stopped {sessions_stopped} monitoring session(s)" if sessions_stopped > 0 else ""
+                                    user_info = f"\n📱 Notified {users_notified} user(s)" if users_notified > 0 else ""
                                     await app.bot.send_message(
                                         chat_id=admin_id,
                                         text=f"🔄 **Background Cleanup**\n\n"
                                              f"📞 Number: {formatted_number}\n"
                                              f"🔐 {sender} : {otp}\n"
-                                             f"🗑️ Auto-deleted from server\n\n"
+                                             f"🗑️ Auto-deleted from server{session_info}{user_info}\n\n"
                                              f"ℹ️ _Background cleanup at {datetime.now(TIMEZONE).strftime('%H:%M:%S')}_",
                                         parse_mode=ParseMode.MARKDOWN
                                     )
