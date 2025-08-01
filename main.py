@@ -1,7 +1,7 @@
 import logging
 import os
 from io import BytesIO, StringIO
-from datetime import datetime
+from datetime import datetime, timedelta
 import csv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
@@ -641,7 +641,14 @@ async def get_latest_sms_for_number(phone_number, date_str=None):
             # Get the latest SMS (first in the list since it's sorted by desc)
             latest_sms = sms_messages[0]
             logging.info(f"Latest SMS for {phone_number}: {latest_sms}")
+            
+            # Enhanced OTP extraction with more detailed logging
             otp = extract_otp_from_message(latest_sms['message'])
+            if otp:
+                logging.info(f"🎯 OTP DETECTED for {phone_number}: {otp}")
+            else:
+                logging.info(f"❌ No OTP found in message: {latest_sms['message'][:100]}...")
+            
             result = {
                 'sms': latest_sms,
                 'otp': otp,
@@ -703,9 +710,13 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
         
         # Morning call timeout: 2 minutes (120 seconds)
         MORNING_CALL_TIMEOUT = 120
+        check_count = 0
         
         while not active_number_monitors[session_id]['stop']:
             try:
+                check_count += 1
+                logging.info(f"🔍 Morning call check #{check_count} for {phone_number}")
+                
                 # Get latest SMS and OTP
                 sms_info = await get_latest_sms_for_number(phone_number)
                 
@@ -837,14 +848,17 @@ async def stop_otp_monitoring(phone_number):
 async def check_sms_for_number(phone_number, date_str=None):
     """Check SMS for a specific phone number using the API"""
     if not date_str:
-        date_str = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
+        # For live monitoring, check last 24 hours to catch recent messages
+        now = datetime.now(TIMEZONE)
+        yesterday = now - timedelta(hours=24)
+        date_str = yesterday.strftime("%Y-%m-%d")
     
     logging.info(f"Checking SMS for number: {phone_number} on date: {date_str}")
     
-    # Build the API URL with parameters
+    # Build the API URL with parameters - optimized for live monitoring
     params = {
         'fdate1': f"{date_str} 00:00:00",
-        'fdate2': f"{date_str} 23:59:59",
+        'fdate2': f"{datetime.now(TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}",  # Current time
         'frange': '',
         'fclient': '',
         'fnum': phone_number,  # Filter by phone number
@@ -860,7 +874,7 @@ async def check_sms_for_number(phone_number, date_str=None):
         'iColumns': '9',
         'sColumns': ',,,,,,,,',
         'iDisplayStart': '0',
-        'iDisplayLength': '25',
+        'iDisplayLength': '50',  # Get more messages for better coverage
         'mDataProp_0': '0',
         'sSearch_0': '',
         'bRegex_0': 'false',
