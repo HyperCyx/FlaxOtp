@@ -1302,8 +1302,10 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "94741854027\n"
         "94775995195\n"
         "94743123866\n\n"
-        "Send 'done' when you're finished entering numbers.\n"
-        "Send 'cancel' to cancel the operation.",
+        "💡 **Options:**\n"
+        "• Send 'done' when finished entering numbers manually\n"
+        "• Upload a CSV file (will skip to country name step)\n"
+        "• Send 'cancel' to cancel the operation",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -1657,9 +1659,9 @@ async def upload_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_bytes.seek(0)
     uploaded_csv = file_bytes
 
-    # Check if user is in add command flow
-    if user_id in user_states and user_states[user_id] == "waiting_for_csv":
-        # User is in /add command flow, ask for name
+    # Check if user is in add command flow (either waiting for manual numbers or CSV)
+    if user_id in user_states and user_states[user_id] in ["waiting_for_csv", "waiting_for_manual_numbers"]:
+        # User is in /add command flow, ask for name immediately (skip "done" step)
         user_states[user_id] = "waiting_for_name"
         await update.message.reply_text(
             "🌍 Please enter the name for all the numbers (manual + CSV):\n"
