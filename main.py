@@ -957,10 +957,21 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Test command to verify bot is working"""
+    """Test command for debugging"""
     user_id = update.effective_user.id
-    logging.info(f"Test command called by user {user_id}")
-    await update.message.reply_text("✅ Bot is working! Commands are registered.")
+    if user_id not in ADMIN_IDS:
+        return
+    
+    # Test OTP extraction
+    test_message = "# Snapchat 157737 is your one time passcode for phone enrollment"
+    otp = extract_otp_from_message(test_message)
+    
+    await update.message.reply_text(
+        f"🧪 Test Results:\n"
+        f"Test Message: {test_message}\n"
+        f"Extracted OTP: {otp}\n"
+        f"Active Monitors: {list(active_number_monitors.keys())}"
+    )
 
 async def list_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List all numbers in database"""
@@ -1535,11 +1546,14 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         elif state == "waiting_for_manual_numbers":
             if text.lower() == "done":
                 if manual_numbers[user_id]:
-                    user_states[user_id] = "waiting_for_csv"
+                    # Skip CSV upload step and go directly to asking for country name
+                    user_states[user_id] = "waiting_for_name"
                     await update.message.reply_text(
-                        "✅ Numbers saved! Now please upload a CSV file (optional).\n"
+                        "✅ Numbers saved!\n"
                         f"📱 Total numbers entered: {len(manual_numbers[user_id])}\n\n"
-                        "If you don't have a CSV file, just send any message to continue."
+                        "🌍 Please enter the name for the numbers:\n"
+                        "Examples: Sri Lanka Ws, Sri Lanka Tg, etc.\n"
+                        "This name will be used for all numbers."
                     )
                 else:
                     await update.message.reply_text("❌ No numbers entered. Please enter some numbers first.")
