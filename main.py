@@ -86,6 +86,8 @@ def get_country_flag(country_code):
                 return '🇺🇸'
             elif country_code.startswith("UK") or country_code.startswith("GB"):
                 return '🇬🇧'
+            elif country_code.startswith("SRI") or country_code.startswith("LK"):
+                return '🇱🇰'
             else:
                 return '🌐'
         if len(country_code) != 2 or not country_code.isalpha():
@@ -146,6 +148,7 @@ def detect_country_code(number, range_str=None):
         '44': 'gb',   # UK
         '91': 'in',   # India
         '966': 'sa',  # Saudi Arabia
+        '94': 'lk',   # Sri Lanka
     }
     
     # Check if number starts with known prefix
