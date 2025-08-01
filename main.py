@@ -304,6 +304,8 @@ async def check_sms_for_number(phone_number, date_str=None):
     if not date_str:
         date_str = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
     
+    logging.info(f"Checking SMS for number: {phone_number} on date: {date_str}")
+    
     # Build the API URL with parameters
     params = {
         'fdate1': f"{date_str} 00:00:00",
@@ -390,12 +392,19 @@ async def check_sms_for_number(phone_number, date_str=None):
     try:
         async with aiohttp.ClientSession() as session:
             url = f"{SMS_API_BASE_URL}{SMS_API_ENDPOINT}"
+            logging.info(f"Making API request to: {url}")
+            logging.info(f"With params: {params}")
+            
             async with session.get(url, params=params, headers=headers) as response:
+                logging.info(f"API response status: {response.status}")
+                
                 if response.status == 200:
                     data = await response.json()
+                    logging.info(f"API response data: {data}")
                     return data
                 else:
-                    logging.error(f"SMS API error: {response.status}")
+                    response_text = await response.text()
+                    logging.error(f"SMS API error: {response.status}, Response: {response_text}")
                     return None
     except Exception as e:
         logging.error(f"Error checking SMS: {e}")
@@ -409,45 +418,53 @@ async def show_sms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Show loading message
     await query.answer("🔍 Checking for SMS messages...", show_alert=True)
     
-    # Check SMS for the number
-    sms_data = await check_sms_for_number(number)
-    
-    if sms_data and 'aaData' in sms_data and sms_data['aaData']:
-        # Filter out summary rows (rows that start with numbers and commas)
-        sms_messages = []
-        for row in sms_data['aaData']:
-            if isinstance(row, list) and len(row) >= 6 and not str(row[0]).startswith('0.'):
-                sms_messages.append({
-                    'datetime': row[0],
-                    'range': row[1],
-                    'number': row[2],
-                    'sender': row[3],
-                    'message': row[5] if len(row) > 5 else 'No message'
-                })
+    try:
+        # Check SMS for the number
+        sms_data = await check_sms_for_number(number)
         
-        if sms_messages:
-            # Format SMS messages
-            message = f"📱 SMS Messages for {number}:\n\n"
-            for i, sms in enumerate(sms_messages[:5], 1):  # Show first 5 messages
-                message += f"📨 **Message {i}:**\n"
-                message += f"🕐 Time: {sms['datetime']}\n"
-                message += f"📞 Number: {sms['number']}\n"
-                message += f"👤 Sender: {sms['sender']}\n"
-                message += f"💬 Message: {sms['message']}\n\n"
+        if sms_data and 'aaData' in sms_data and sms_data['aaData']:
+            # Filter out summary rows and get actual SMS messages
+            sms_messages = []
+            for row in sms_data['aaData']:
+                if isinstance(row, list) and len(row) >= 6:
+                    # Check if this is a real SMS message (not a summary row)
+                    first_item = str(row[0])
+                    if not first_item.startswith('0.') and not ',' in first_item and len(first_item) > 10:
+                        sms_messages.append({
+                            'datetime': row[0],
+                            'range': row[1],
+                            'number': row[2],
+                            'sender': row[3] if len(row) > 3 else 'Unknown',
+                            'message': row[5] if len(row) > 5 else 'No message content'
+                        })
             
-            if len(sms_messages) > 5:
-                message += f"... and {len(sms_messages) - 5} more messages"
-            
-            # Send as a new message since alert has character limit
-            await context.bot.send_message(
-                chat_id=query.from_user.id,
-                text=message,
-                parse_mode=ParseMode.MARKDOWN
-            )
+            if sms_messages:
+                # Format SMS messages
+                message = f"📱 **SMS Messages for {number}:**\n\n"
+                for i, sms in enumerate(sms_messages[:5], 1):  # Show first 5 messages
+                    message += f"📨 **Message {i}:**\n"
+                    message += f"🕐 **Time:** {sms['datetime']}\n"
+                    message += f"📞 **Number:** {sms['number']}\n"
+                    message += f"👤 **Sender:** {sms['sender']}\n"
+                    message += f"💬 **Message:** {sms['message']}\n\n"
+                
+                if len(sms_messages) > 5:
+                    message += f"📋 *... and {len(sms_messages) - 5} more messages*"
+                
+                # Send as a new message since alert has character limit
+                await context.bot.send_message(
+                    chat_id=query.from_user.id,
+                    text=message,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                await query.answer("📭 No SMS messages found for this number today.", show_alert=True)
         else:
             await query.answer("📭 No SMS messages found for this number today.", show_alert=True)
-    else:
-        await query.answer("❌ No SMS messages found or error occurred.", show_alert=True)
+            
+    except Exception as e:
+        logging.error(f"Error in show_sms: {e}")
+        await query.answer("❌ Error checking SMS. Please try again.", show_alert=True)
 
 
 
