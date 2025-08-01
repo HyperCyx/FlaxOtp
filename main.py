@@ -35,7 +35,7 @@ ADMIN_IDS = {7762548831}
 # SMS API Configuration
 SMS_API_BASE_URL = "http://51.83.103.80"
 SMS_API_ENDPOINT = "/ints/agent/res/data_smscdr.php"
-SMS_API_COOKIE = "PHPSESSID=dn1es46hla171cs6vunle9tq5v"  # This needs to be updated with a fresh session
+SMS_API_COOKIE = "PHPSESSID=jfi9fn51crfub5jj850qte6tah"
 
 # OTP Monitoring Configuration
 OTP_CHECK_INTERVAL = 5  # Check for new OTPs every 5 seconds
