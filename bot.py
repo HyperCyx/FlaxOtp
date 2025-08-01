@@ -723,12 +723,14 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                     # Stop this monitoring session
                     await stop_otp_monitoring_session(session_id)
                     
-                    # Notify user
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"✅ Number {formatted_number} has been permanently deleted after receiving OTP: {current_otp}\n\n"
-                             f"🔄 Click 'Change' to get another number from the same country, or select a different country."
-                    )
+                    # Notify user (send to user's private chat only)
+                    monitoring_user_id = active_number_monitors[session_id].get('user_id')
+                    if monitoring_user_id:
+                        await context.bot.send_message(
+                            chat_id=monitoring_user_id,  # Send to user's private chat
+                            text=f"✅ Number {formatted_number} has been permanently deleted after receiving OTP: {current_otp}\n\n"
+                                 f"🔄 Click 'Change' to get another number from the same country, or select a different country."
+                        )
                     return  # Exit monitoring since OTP was found
                     
             except Exception as e:
@@ -794,12 +796,14 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                                 # Stop this monitoring session
                                 await stop_otp_monitoring_session(session_id)
                                 
-                                # Notify user
-                                await context.bot.send_message(
-                                    chat_id=chat_id,
-                                    text=f"✅ Number {formatted_number} has been permanently deleted after receiving OTP: {current_otp}\n\n"
-                                         f"🔄 Click 'Change' to get another number from the same country, or select a different country."
-                                )
+                                # Notify user (send to user's private chat only)
+                                monitoring_user_id = active_number_monitors[session_id].get('user_id')
+                                if monitoring_user_id:
+                                    await context.bot.send_message(
+                                        chat_id=monitoring_user_id,  # Send to user's private chat
+                                        text=f"✅ Number {formatted_number} has been permanently deleted after receiving OTP: {current_otp}\n\n"
+                                             f"🔄 Click 'Change' to get another number from the same country, or select a different country."
+                                    )
                                 
                         except Exception as e:
                             logging.error(f"Failed to update message for {phone_number}: {e}")
@@ -815,14 +819,17 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                     # Stop this monitoring session (number stays in database for reuse)
                     await stop_otp_monitoring_session(session_id)
                     
-                    # Notify user about morning call ending
+                    # Notify user about morning call ending (send to user's private chat only)
                     try:
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=f"⏰ Morning call ended for {format_number_display(phone_number)} (2 minutes timeout)\n\n"
-                                 f"🔄 This number can be given to other users again.\n"
-                                 f"📞 You can get a new number anytime!"
-                        )
+                        # Get the user ID from the monitoring session to ensure private message
+                        monitoring_user_id = active_number_monitors[session_id].get('user_id')
+                        if monitoring_user_id:
+                            await context.bot.send_message(
+                                chat_id=monitoring_user_id,  # Send to user's private chat, not group/channel
+                                text=f"⏰ Morning call ended for {format_number_display(phone_number)} (2 minutes timeout)\n\n"
+                                     f"🔄 This number can be given to other users again.\n"
+                                     f"📞 You can get a new number anytime!"
+                            )
                     except Exception as e:
                         logging.error(f"Failed to send morning call timeout message for {phone_number}: {e}")
                     
