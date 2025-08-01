@@ -461,18 +461,18 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                             detected_country = country_code  # Use the country code for flag
                             flag = get_country_flag(detected_country)
                             
-                                                    message = (
-                            f"{flag} Country: {country_name}\n"
-                            f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})"
-                        )
-                        
-                        # Add OTP in compact format
-                        if sms_info['sms']['sender']:
-                            message += f"\n🔐 {sms_info['sms']['sender']} : {current_otp}"
-                        else:
-                            message += f"\n🔐 OTP : {current_otp}"
-                        
-                        message += "\n\nSelect an option:"
+                            message = (
+                                f"{flag} Country: {country_name}\n"
+                                f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})"
+                            )
+                            
+                            # Add OTP in compact format
+                            if sms_info['sms']['sender']:
+                                message += f"\n🔐 {sms_info['sms']['sender']} : {current_otp}"
+                            else:
+                                message += f"\n🔐 OTP : {current_otp}"
+                            
+                            message += "\n\nSelect an option:"
                             
                             try:
                                 await context.bot.edit_message_text(
