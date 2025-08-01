@@ -1570,28 +1570,116 @@ async def update_sms_session(update: Update, context: ContextTypes.DEFAULT_TYPE)
     args = context.args
     if not args:
         await update.message.reply_text(
-            "🔑 SMS API Session Update\n\n"
-            "Usage: /updatesms <new_session_cookie>\n\n"
-            "Example: /updatesms PHPSESSID=abc123def456\n\n"
-            "⚠️ Current session appears to be expired.\n"
-            "🔍 Get fresh session from your SMS panel."
+            "🔑 **SMS API Session Update**\n\n"
+            "**Usage:** `/updatesms <new_session_cookie>`\n\n"
+            "**Example:** `/updatesms PHPSESSID=abc123def456`\n\n"
+            "**How to get new session:**\n"
+            "1. Login to SMS panel in browser\n"
+            "2. Open Developer Tools (F12)\n"
+            "3. Go to Network tab\n"
+            "4. Refresh page\n"
+            "5. Find request to data_smscdr.php\n"
+            "6. Copy Cookie header value\n\n"
+            f"**Current session:** `{SMS_API_COOKIE[:20]}...{SMS_API_COOKIE[-10:]}`",
+            parse_mode=ParseMode.MARKDOWN
         )
         return
     
-    new_cookie = args[0]
+    new_cookie = " ".join(args)  # Join all args in case cookie has spaces
     if not new_cookie.startswith("PHPSESSID="):
         await update.message.reply_text("❌ Invalid session cookie format. Must start with 'PHPSESSID='")
         return
     
-    # Update the global variable
-    global SMS_API_COOKIE
-    SMS_API_COOKIE = new_cookie
+    await update.message.reply_text("🔄 Testing new session...")
     
-    await update.message.reply_text(
-        f"✅ SMS API session updated!\n\n"
-        f"🔑 New cookie: {new_cookie}\n\n"
-        f"🔄 Restart the bot to apply changes."
-    )
+    # Test the new session before applying
+    try:
+        url = f"{SMS_API_BASE_URL}{SMS_API_ENDPOINT}"
+        
+        from datetime import datetime, timedelta
+        import pytz
+        timezone = pytz.timezone(TIMEZONE_NAME)
+        now = datetime.now(timezone)
+        yesterday = now - timedelta(hours=24)
+        date_str = yesterday.strftime("%Y-%m-%d")
+        
+        params = {
+            'fdate1': f"{date_str} 00:00:00",
+            'fdate2': f"{now.strftime('%Y-%m-%d %H:%M:%S')}",
+            'fnum': '000000000',
+            'iDisplayLength': '1',
+            'sSortDir_0': 'desc',
+            '_': str(int(datetime.now().timestamp() * 1000))
+        }
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36',
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': f'{SMS_API_BASE_URL}/ints/agent/SMSCDRReports',
+            'Accept-Encoding': 'gzip, deflate',
+            'Accept-Language': 'en-US,en;q=0.9,ks-IN;q=0.8,ks;q=0.7',
+            'Cookie': new_cookie  # Test with new cookie
+        }
+        
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(url, params=params, headers=headers) as response:
+                response_text = await response.text()
+                
+                # Check if new session works
+                if response.status == 200 and response_text.strip().startswith('{'):
+                    try:
+                        import json
+                        json.loads(response_text)  # Validate JSON
+                        
+                        # Session test passed, update globally
+                        global SMS_API_COOKIE
+                        old_cookie = SMS_API_COOKIE
+                        SMS_API_COOKIE = new_cookie
+                        
+                        # Update config.py file
+                        try:
+                            with open('config.py', 'r') as f:
+                                config_content = f.read()
+                            
+                            # Replace the SMS_API_COOKIE line
+                            import re
+                            config_content = re.sub(
+                                r'SMS_API_COOKIE = "[^"]*"',
+                                f'SMS_API_COOKIE = "{new_cookie}"',
+                                config_content
+                            )
+                            
+                            with open('config.py', 'w') as f:
+                                f.write(config_content)
+                            
+                            config_updated = "✅ Config file updated"
+                        except Exception as e:
+                            config_updated = f"⚠️ Config file update failed: {e}"
+                        
+                        await update.message.reply_text(
+                            f"✅ **SMS API Session Updated Successfully!**\n\n"
+                            f"🔑 **New session:** `{new_cookie[:20]}...{new_cookie[-10:]}`\n"
+                            f"🔑 **Old session:** `{old_cookie[:20]}...{old_cookie[-10:]}`\n\n"
+                            f"🔄 **Status:** Active immediately (no restart needed)\n"
+                            f"📁 **Config:** {config_updated}\n"
+                            f"🎯 **API:** Ready for OTP detection\n\n"
+                            f"_Session updated at {now.strftime('%Y-%m-%d %H:%M:%S')}_",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        
+                    except:
+                        await update.message.reply_text("❌ New session returns invalid JSON response")
+                        
+                elif 'login' in response_text.lower():
+                    await update.message.reply_text("❌ New session is invalid - redirected to login")
+                elif 'direct script access not allowed' in response_text.lower():
+                    await update.message.reply_text("❌ New session blocked - direct script access not allowed")
+                else:
+                    await update.message.reply_text(f"❌ New session test failed - HTTP {response.status}")
+                    
+    except Exception as e:
+        await update.message.reply_text(f"❌ Session test failed: {str(e)}")
 
 async def reset_current_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reset current number tracking for debugging"""
