@@ -36,6 +36,7 @@ SMS_API_COOKIE = "PHPSESSID=pq0oq4ckbcjnm7dbp6rna1dfdo"
 
 # OTP Monitoring Configuration
 OTP_CHECK_INTERVAL = 30  # Check for new OTPs every 30 seconds
+OTP_TIMEOUT = 300  # Return number to pool after 5 minutes if no OTP
 active_number_monitors = {}  # Store active monitors for each number
 
 TIMEZONE = pytz.timezone('Asia/Riyadh')
@@ -272,7 +273,7 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     country_info = await countries_coll.find_one({"country_code": country_code})
     country_name = country_info["display_name"] if country_info else country_code
 
-    result = await coll.find_one_and_delete({"country_code": country_code})
+    result = await coll.find_one({"country_code": country_code})
     
     if result and "number" in result:
         number = result["number"]
@@ -333,7 +334,7 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     country_info = await countries_coll.find_one({"country_code": country_code})
     country_name = country_info["display_name"] if country_info else country_code
 
-    result = await coll.find_one_and_delete({"country_code": country_code})
+    result = await coll.find_one({"country_code": country_code})
     
     if result and "number" in result:
         number = result["number"]
@@ -433,7 +434,8 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
     active_number_monitors[phone_number] = {
         'stop': False,
         'last_otp': None,
-        'last_check': None
+        'last_check': None,
+        'start_time': datetime.now(TIMEZONE)
     }
     
     async def monitor_otp():
@@ -483,6 +485,32 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                                     parse_mode=ParseMode.MARKDOWN
                                 )
                                 logging.info(f"Updated OTP for {phone_number}: {current_otp}")
+                                
+                                # Delete the number from database after OTP is received
+                                db = context.bot_data["db"]
+                                coll = db[COLLECTION_NAME]
+                                countries_coll = db[COUNTRIES_COLLECTION]
+                                
+                                # Delete the number
+                                delete_result = await coll.delete_one({"number": phone_number})
+                                if delete_result.deleted_count > 0:
+                                    logging.info(f"Deleted number {phone_number} after OTP received")
+                                    
+                                    # Update country count
+                                    await countries_coll.update_one(
+                                        {"country_code": country_code},
+                                        {"$inc": {"number_count": -1}}
+                                    )
+                                    
+                                    # Stop monitoring this number
+                                    await stop_otp_monitoring(phone_number)
+                                    
+                                    # Show deletion message to user
+                                    await context.bot.send_message(
+                                        chat_id=chat_id,
+                                        text=f"✅ Number {formatted_number} has been deleted after receiving OTP: {current_otp}"
+                                    )
+                                    
                             except Exception as e:
                                 logging.error(f"Failed to update message for {phone_number}: {e}")
                         else:
@@ -491,6 +519,28 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                         logging.info(f"No OTP found in SMS for {phone_number}")
                 else:
                     logging.info(f"No SMS info found for {phone_number}")
+                
+                # Check for timeout - return number to pool if no OTP received
+                current_time = datetime.now(TIMEZONE)
+                start_time = active_number_monitors[phone_number]['start_time']
+                time_elapsed = (current_time - start_time).total_seconds()
+                
+                if time_elapsed > OTP_TIMEOUT and not active_number_monitors[phone_number]['last_otp']:
+                    logging.info(f"Timeout reached for {phone_number}, returning to pool")
+                    
+                    # Stop monitoring
+                    await stop_otp_monitoring(phone_number)
+                    
+                    # Notify user that number is being returned to pool
+                    try:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"⏰ Number {format_number_display(phone_number)} has been returned to pool (no OTP received within 5 minutes)"
+                        )
+                    except Exception as e:
+                        logging.error(f"Failed to send timeout message for {phone_number}: {e}")
+                    
+                    break
                 
                 # Wait before next check
                 await asyncio.sleep(OTP_CHECK_INTERVAL)
