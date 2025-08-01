@@ -34,6 +34,9 @@ logging.basicConfig(level=getattr(logging, LOGGING_LEVEL))
 CURRENT_SMS_API_COOKIE = SMS_API_COOKIE
 logging.info(f"🔑 Initialized SMS API session from config: {CURRENT_SMS_API_COOKIE[:20]}...{CURRENT_SMS_API_COOKIE[-10:]}")
 
+# Admin notification rate limiting
+last_api_failure_notification = {}  # Track last notification time for each failure type
+
 # Bot state variables
 uploaded_csv = None
 user_states = {}  # Store user states for country input
@@ -99,6 +102,131 @@ def update_config_file_session(new_cookie):
     except Exception as e:
         logging.error(f"❌ Failed to update config file: {e}")
         return False
+
+# === ADMIN NOTIFICATION FUNCTIONS ===
+async def notify_admins_api_failure(failure_type):
+    """Notify all admins about SMS API failure with rate limiting"""
+    try:
+        # Rate limiting - only send notification once per 10 minutes for same failure type
+        current_time = datetime.now(TIMEZONE)
+        if failure_type in last_api_failure_notification:
+            time_diff = (current_time - last_api_failure_notification[failure_type]).total_seconds()
+            if time_diff < 600:  # 10 minutes
+                logging.info(f"🔇 API failure notification rate limited for {failure_type}")
+                return
+        
+        last_api_failure_notification[failure_type] = current_time
+        
+        from telegram import Bot
+        bot = Bot(token=TOKEN)
+        
+        current_time_str = current_time.strftime('%Y-%m-%d %H:%M:%S')
+        current_session = get_current_sms_cookie()
+        
+        if failure_type == "session_expired":
+            message = (
+                f"🚨 **SMS API Session Expired**\n\n"
+                f"⏰ **Time**: {current_time_str}\n"
+                f"🔑 **Current Session**: `{current_session[:20]}...{current_session[-10:]}`\n"
+                f"📡 **Endpoint**: {SMS_API_BASE_URL}\n\n"
+                f"❌ **Issue**: Session expired - redirected to login\n"
+                f"🔄 **Auto Recovery**: Failed (config has same session)\n\n"
+                f"🔧 **Required Action**:\n"
+                f"• Get fresh session from SMS panel\n"
+                f"• Use `/updatesms PHPSESSID=new_session`\n"
+                f"• Or update config.py and use `/reloadsession`\n\n"
+                f"⚠️ **Impact**: OTP detection currently not working"
+            )
+        elif failure_type == "connection_error":
+            message = (
+                f"🚨 **SMS API Connection Failed**\n\n"
+                f"⏰ **Time**: {current_time_str}\n"
+                f"📡 **Endpoint**: {SMS_API_BASE_URL}\n\n"
+                f"❌ **Issue**: Cannot connect to SMS API server\n"
+                f"🔧 **Possible Causes**:\n"
+                f"• Server is down\n"
+                f"• Network connectivity issues\n"
+                f"• Firewall blocking requests\n\n"
+                f"💡 **Suggestions**:\n"
+                f"• Check server status\n"
+                f"• Use `/checkapi` to test connection\n"
+                f"• Verify network connectivity\n\n"
+                f"⚠️ **Impact**: OTP detection currently not working"
+            )
+        elif failure_type == "access_blocked":
+            message = (
+                f"🚨 **SMS API Access Blocked**\n\n"
+                f"⏰ **Time**: {current_time_str}\n"
+                f"🔑 **Session**: `{current_session[:20]}...{current_session[-10:]}`\n"
+                f"📡 **Endpoint**: {SMS_API_BASE_URL}\n\n"
+                f"❌ **Issue**: Direct script access not allowed\n"
+                f"🔧 **Required Action**:\n"
+                f"• Login to SMS panel manually\n"
+                f"• Get fresh session cookie\n"
+                f"• Update using `/updatesms PHPSESSID=new_session`\n\n"
+                f"⚠️ **Impact**: OTP detection currently not working"
+            )
+        else:
+            message = (
+                f"🚨 **SMS API Error**\n\n"
+                f"⏰ **Time**: {current_time_str}\n"
+                f"📡 **Endpoint**: {SMS_API_BASE_URL}\n"
+                f"❌ **Issue**: {failure_type}\n\n"
+                f"🔧 **Suggestion**: Use `/checkapi` to diagnose\n"
+                f"⚠️ **Impact**: OTP detection may not be working"
+            )
+        
+        # Send to all admins
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text=message,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                logging.info(f"📢 API failure notification sent to admin {admin_id}")
+            except Exception as e:
+                logging.error(f"❌ Failed to notify admin {admin_id}: {e}")
+                
+    except Exception as e:
+        logging.error(f"❌ Failed to send admin notifications: {e}")
+
+async def notify_admins_api_recovery():
+    """Notify all admins about successful API recovery"""
+    try:
+        from telegram import Bot
+        bot = Bot(token=TOKEN)
+        
+        current_time = datetime.now(TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')
+        current_session = get_current_sms_cookie()
+        
+        message = (
+            f"✅ **SMS API Auto-Recovery Successful**\n\n"
+            f"⏰ **Time**: {current_time}\n"
+            f"🔑 **New Session**: `{current_session[:20]}...{current_session[-10:]}`\n"
+            f"📡 **Endpoint**: {SMS_API_BASE_URL}\n\n"
+            f"🔄 **What Happened**:\n"
+            f"• Session expired and was detected\n"
+            f"• Auto-reloaded from config.py file\n"
+            f"• API connection restored\n\n"
+            f"✅ **Status**: OTP detection fully operational\n"
+            f"💡 **Tip**: Use `/checkapi` to verify health"
+        )
+        
+        # Send to all admins
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text=message,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                logging.info(f"📢 API recovery notification sent to admin {admin_id}")
+            except Exception as e:
+                logging.error(f"❌ Failed to notify admin {admin_id}: {e}")
+                
+    except Exception as e:
+        logging.error(f"❌ Failed to send recovery notifications: {e}")
 
 # === UTILITY FUNCTIONS ===
 def extract_otp_from_message(message):
@@ -1058,9 +1186,13 @@ async def check_sms_for_number(phone_number, date_str=None):
                         logging.info(f"🔄 Attempting to reload session from config file...")
                         if reload_config_session():
                             logging.info(f"✅ Session reloaded, retrying API call...")
+                            # Notify admins of successful auto-recovery
+                            asyncio.create_task(notify_admins_api_recovery())
                             # Don't return None, let it try again with new session
                         else:
                             logging.error(f"❌ Config reload failed - need manual session update")
+                            # Notify admins of API failure
+                            asyncio.create_task(notify_admins_api_failure("session_expired"))
                             return None
                     
                     # Always try to parse as JSON regardless of content type
@@ -1090,9 +1222,20 @@ async def check_sms_for_number(phone_number, date_str=None):
                 else:
                     response_text = await response.text()
                     logging.error(f"SMS API error: {response.status}, Response: {response_text}")
+                    
+                    # Check if it's an access blocked error
+                    if 'direct script access not allowed' in response_text.lower():
+                        asyncio.create_task(notify_admins_api_failure("access_blocked"))
+                    else:
+                        asyncio.create_task(notify_admins_api_failure(f"HTTP {response.status}"))
                     return None
+    except asyncio.TimeoutError:
+        logging.error(f"SMS API timeout")
+        asyncio.create_task(notify_admins_api_failure("connection_timeout"))
+        return None
     except Exception as e:
         logging.error(f"Error checking SMS: {e}")
+        asyncio.create_task(notify_admins_api_failure(f"connection_error: {str(e)}"))
         return None
 
 async def show_sms(update: Update, context: ContextTypes.DEFAULT_TYPE):
