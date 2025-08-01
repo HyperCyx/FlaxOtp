@@ -41,6 +41,34 @@ user_states = {}  # Store user states for country input
 manual_numbers = {}  # Store manual numbers for each user
 
 # === UTILITY FUNCTIONS ===
+def extract_otp_from_message(message):
+    """Extract OTP from SMS message"""
+    if not message:
+        return None
+    
+    # Common OTP patterns
+    patterns = [
+        r'\b(\d{4,6})\b',  # 4-6 digit OTP
+        r'code[:\s]*(\d{4,6})',  # "code: 123456"
+        r'verification[:\s]*(\d{4,6})',  # "verification: 123456"
+        r'OTP[:\s]*(\d{4,6})',  # "OTP: 123456"
+        r'password[:\s]*(\d{4,6})',  # "password: 123456"
+        r'pin[:\s]*(\d{4,6})',  # "pin: 123456"
+        r'(\d{4,6})[^\d]*$',  # OTP at end of message
+    ]
+    
+    message_lower = message.lower()
+    
+    for pattern in patterns:
+        match = re.search(pattern, message_lower)
+        if match:
+            otp = match.group(1)
+            # Validate that it's actually an OTP (not just any number)
+            if len(otp) >= 4 and len(otp) <= 6 and otp.isdigit():
+                return otp
+    
+    return None
+
 def get_country_flag(country_code):
     """Get country flag emoji from country code"""
     try:
@@ -241,11 +269,22 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         detected_country = result.get("detected_country", country_code)
         flag = get_country_flag(detected_country)
         
+        # Check for latest SMS and OTP
+        sms_info = await get_latest_sms_for_number(number)
+        
         message = (
             f"{flag} Country: {country_name}\n"
-            f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})\n\n"
-            "Select an option:"
+            f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})"
         )
+        
+        # Add OTP if found
+        if sms_info and sms_info['otp']:
+            message += f"\n🔐 **OTP: `{sms_info['otp']}`**"
+            if sms_info['sms']['sender']:
+                message += f"\n👤 Sender: {sms_info['sms']['sender']}"
+            message += f"\n🕐 Time: {sms_info['sms']['datetime']}"
+        
+        message += "\n\nSelect an option:"
         
         await query.edit_message_text(
             message,
@@ -281,11 +320,22 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         detected_country = result.get("detected_country", country_code)
         flag = get_country_flag(detected_country)
         
+        # Check for latest SMS and OTP
+        sms_info = await get_latest_sms_for_number(number)
+        
         message = (
             f"{flag} Country: {country_name}\n"
-            f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})\n\n"
-            "Select an option:"
+            f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})"
         )
+        
+        # Add OTP if found
+        if sms_info and sms_info['otp']:
+            message += f"\n🔐 **OTP: `{sms_info['otp']}`**"
+            if sms_info['sms']['sender']:
+                message += f"\n👤 Sender: {sms_info['sms']['sender']}"
+            message += f"\n🕐 Time: {sms_info['sms']['datetime']}"
+        
+        message += "\n\nSelect an option:"
         
         await query.edit_message_text(
             message,
@@ -298,6 +348,38 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⚠️ No more numbers available for {country_name}. Please select another country.",
             reply_markup=keyboard
         )
+
+async def get_latest_sms_for_number(phone_number, date_str=None):
+    """Get the latest SMS for a phone number and extract OTP"""
+    sms_data = await check_sms_for_number(phone_number, date_str)
+    
+    if sms_data and 'aaData' in sms_data and sms_data['aaData']:
+        # Filter out summary rows and get actual SMS messages
+        sms_messages = []
+        for row in sms_data['aaData']:
+            if isinstance(row, list) and len(row) >= 6:
+                # Check if this is a real SMS message (not a summary row)
+                first_item = str(row[0])
+                if not first_item.startswith('0.') and not ',' in first_item and len(first_item) > 10:
+                    sms_messages.append({
+                        'datetime': row[0],
+                        'range': row[1],
+                        'number': row[2],
+                        'sender': row[3] if len(row) > 3 else 'Unknown',
+                        'message': row[5] if len(row) > 5 else 'No message content'
+                    })
+        
+        if sms_messages:
+            # Get the latest SMS (first in the list since it's sorted by desc)
+            latest_sms = sms_messages[0]
+            otp = extract_otp_from_message(latest_sms['message'])
+            return {
+                'sms': latest_sms,
+                'otp': otp,
+                'total_messages': len(sms_messages)
+            }
+    
+    return None
 
 async def check_sms_for_number(phone_number, date_str=None):
     """Check SMS for a specific phone number using the API"""
