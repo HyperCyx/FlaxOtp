@@ -1166,7 +1166,7 @@ async def check_sms_for_number(phone_number, date_str=None):
     }
     
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             url = f"{SMS_API_BASE_URL}{SMS_API_ENDPOINT}"
             logging.info(f"Making API request to: {url}")
             logging.info(f"With params: {params}")
@@ -2714,7 +2714,7 @@ async def post_init(app):
         logging.error(f"Failed to start background task: {e}")
 
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
     mongo_client = AsyncIOMotorClient(MONGO_URI)
     db = mongo_client[DB_NAME]
