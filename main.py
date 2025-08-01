@@ -292,10 +292,10 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Add OTP if found
         if sms_info and sms_info['otp']:
-            message += f"\n🔐 **OTP: `{sms_info['otp']}`**"
             if sms_info['sms']['sender']:
-                message += f"\n👤 Sender: {sms_info['sms']['sender']}"
-            message += f"\n🕐 Time: {sms_info['sms']['datetime']}"
+                message += f"\n🔐 {sms_info['sms']['sender']} : {sms_info['otp']}"
+            else:
+                message += f"\n🔐 OTP : {sms_info['otp']}"
         
         message += "\n\nSelect an option:"
         
@@ -353,10 +353,10 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Add OTP if found
         if sms_info and sms_info['otp']:
-            message += f"\n🔐 **OTP: `{sms_info['otp']}`**"
             if sms_info['sms']['sender']:
-                message += f"\n👤 Sender: {sms_info['sms']['sender']}"
-            message += f"\n🕐 Time: {sms_info['sms']['datetime']}"
+                message += f"\n🔐 {sms_info['sms']['sender']} : {sms_info['otp']}"
+            else:
+                message += f"\n🔐 OTP : {sms_info['otp']}"
         
         message += "\n\nSelect an option:"
         
@@ -461,16 +461,18 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                             detected_country = country_code  # Use the country code for flag
                             flag = get_country_flag(detected_country)
                             
-                            message = (
-                                f"{flag} Country: {country_name}\n"
-                                f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})\n"
-                                f"🔐 **OTP: `{current_otp}`**"
-                            )
-                            
-                            if sms_info['sms']['sender']:
-                                message += f"\n👤 Sender: {sms_info['sms']['sender']}"
-                            message += f"\n🕐 Time: {sms_info['sms']['datetime']}"
-                            message += "\n\nSelect an option:"
+                                                    message = (
+                            f"{flag} Country: {country_name}\n"
+                            f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})"
+                        )
+                        
+                        # Add OTP in compact format
+                        if sms_info['sms']['sender']:
+                            message += f"\n🔐 {sms_info['sms']['sender']} : {current_otp}"
+                        else:
+                            message += f"\n🔐 OTP : {current_otp}"
+                        
+                        message += "\n\nSelect an option:"
                             
                             try:
                                 await context.bot.edit_message_text(
