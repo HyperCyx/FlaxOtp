@@ -399,9 +399,41 @@ async def check_sms_for_number(phone_number, date_str=None):
                 logging.info(f"API response status: {response.status}")
                 
                 if response.status == 200:
-                    data = await response.json()
-                    logging.info(f"API response data: {data}")
-                    return data
+                    # Check content type
+                    content_type = response.headers.get('content-type', '')
+                    logging.info(f"Content-Type: {content_type}")
+                    
+                    if 'application/json' in content_type or 'text/html' in content_type:
+                        try:
+                            data = await response.json()
+                            logging.info(f"API response data: {data}")
+                            return data
+                        except Exception as json_error:
+                            # If JSON parsing fails, try to get the text and parse manually
+                            response_text = await response.text()
+                            logging.error(f"JSON parsing failed: {json_error}")
+                            logging.info(f"Response text: {response_text[:500]}...")  # Log first 500 chars
+                            
+                            # Try to extract JSON from HTML response
+                            if 'aaData' in response_text:
+                                try:
+                                    # Find JSON part in the response
+                                    start = response_text.find('{')
+                                    end = response_text.rfind('}') + 1
+                                    if start != -1 and end != 0:
+                                        json_part = response_text[start:end]
+                                        data = json.loads(json_part)
+                                        logging.info(f"Extracted JSON data: {data}")
+                                        return data
+                                except Exception as extract_error:
+                                    logging.error(f"Failed to extract JSON: {extract_error}")
+                            
+                            return None
+                    else:
+                        response_text = await response.text()
+                        logging.error(f"Unexpected content type: {content_type}")
+                        logging.info(f"Response text: {response_text[:500]}...")
+                        return None
                 else:
                     response_text = await response.text()
                     logging.error(f"SMS API error: {response.status}, Response: {response_text}")
@@ -464,7 +496,7 @@ async def show_sms(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     except Exception as e:
         logging.error(f"Error in show_sms: {e}")
-        await query.answer("❌ Error checking SMS. Please try again.", show_alert=True)
+        await query.answer("❌ SMS API not available. Please try again later.", show_alert=True)
 
 
 
