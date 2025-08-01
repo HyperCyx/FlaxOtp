@@ -1889,6 +1889,65 @@ async def update_sms_session(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         await update.message.reply_text(f"❌ Session test failed: {str(e)}")
 
+async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show all admin commands with examples"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
+        return
+    
+    admin_commands = """
+🔧 **ADMIN COMMAND CENTER**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**📊 DATABASE MANAGEMENT:**
+1️⃣ `/stats` - View database statistics
+2️⃣ `/listnumbers` - List all numbers by country
+3️⃣ `/listnumbers Pakistan` - List numbers for specific country
+4️⃣ `/deletecountry Pakistan` - Delete all numbers from a country
+5️⃣ `/deleteall` - Delete all numbers (with confirmation)
+
+**📱 NUMBER MANAGEMENT:**
+6️⃣ `/add` - Add numbers manually + CSV upload
+7️⃣ `/upload` - Upload CSV file directly
+8️⃣ `/save` - Save uploaded CSV to database
+9️⃣ `/cleanup` - Clean numbers that have received OTPs
+
+**🔍 MONITORING & TESTING:**
+🔟 `/monitoring` - Check active OTP monitoring status
+1️⃣1️⃣ `/test` - Debug command for testing features
+1️⃣2️⃣ `/forceotp +923066082919` - **Force OTP check for specific number**
+1️⃣3️⃣ `/countrynumbers` - Check available numbers per country
+
+**🌐 API & SESSION MANAGEMENT:**
+1️⃣4️⃣ `/checkapi` - Test SMS API connection status
+1️⃣5️⃣ `/updatesms PHPSESSID=abc123def456` - Update SMS session cookie
+1️⃣6️⃣ `/reloadsession` - Reload session from config.py file
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 **QUICK EXAMPLES:**
+
+• **Add Numbers**: `/add` → Manual entry + CSV upload
+• **Check API**: `/checkapi` → Test connection health
+• **Update Session**: `/updatesms PHPSESSID=new_session_here`
+• **Force Check**: `/forceotp +923066082919` ← **Example #12**
+• **View Stats**: `/stats` → Database overview
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚡ **POWER USER TIPS:**
+
+🔄 **Session Management**: Use `/checkapi` first, then `/updatesms` if needed
+📊 **Database Health**: Run `/stats` and `/countrynumbers` regularly  
+🧹 **Maintenance**: Use `/cleanup` weekly to remove used numbers
+🔍 **Debugging**: `/test` + `/forceotp` for troubleshooting
+📱 **Bulk Operations**: `/add` for manual + CSV combined workflow
+
+🎯 **Admin ID**: `{user_id}`
+📍 **Status**: Full administrative access granted
+"""
+    
+    await update.message.reply_text(admin_commands, parse_mode=ParseMode.MARKDOWN)
+
 async def reload_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reload SMS API session from config file"""
     user_id = update.effective_user.id
@@ -2678,6 +2737,7 @@ def main():
     app.add_handler(CommandHandler("resetnumber", reset_current_number))
     app.add_handler(CommandHandler("morningcalls", show_my_morning_calls))
     app.add_handler(CommandHandler("updatesms", update_sms_session))
+    app.add_handler(CommandHandler("admin", admin_help))
     app.add_handler(CommandHandler("reloadsession", reload_session))
     app.add_handler(CallbackQueryHandler(check_join, pattern="check_join"))
     app.add_handler(CallbackQueryHandler(request_number, pattern="request_number"))
