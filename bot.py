@@ -723,13 +723,12 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                     # Stop this monitoring session
                     await stop_otp_monitoring_session(session_id)
                     
-                    # Notify user (send to user's private chat only)
+                    # Send clean OTP notification to user's private chat
                     monitoring_user_id = active_number_monitors[session_id].get('user_id')
                     if monitoring_user_id:
                         await context.bot.send_message(
                             chat_id=monitoring_user_id,  # Send to user's private chat
-                            text=f"✅ Number {formatted_number} has been permanently deleted after receiving OTP: {current_otp}\n\n"
-                                 f"🔄 Click 'Change' to get another number from the same country, or select a different country."
+                            text=f"📞 Number: {formatted_number}\n🔐 {immediate_sms_info['sms']['sender']} : {current_otp}"
                         )
                     return  # Exit monitoring since OTP was found
                     
@@ -796,13 +795,12 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                                 # Stop this monitoring session
                                 await stop_otp_monitoring_session(session_id)
                                 
-                                # Notify user (send to user's private chat only)
+                                # Send clean OTP notification to user's private chat
                                 monitoring_user_id = active_number_monitors[session_id].get('user_id')
                                 if monitoring_user_id:
                                     await context.bot.send_message(
                                         chat_id=monitoring_user_id,  # Send to user's private chat
-                                        text=f"✅ Number {formatted_number} has been permanently deleted after receiving OTP: {current_otp}\n\n"
-                                             f"🔄 Click 'Change' to get another number from the same country, or select a different country."
+                                        text=f"📞 Number: {formatted_number}\n🔐 {sms_info['sms']['sender']} : {current_otp}"
                                     )
                                 
                         except Exception as e:
