@@ -602,6 +602,7 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
     }
     
     async def monitor_otp():
+        logging.info(f"Starting OTP monitoring for {phone_number}")
         while not active_number_monitors[phone_number]['stop']:
             try:
                 logging.info(f"Checking for new OTP for {phone_number}")
@@ -1154,16 +1155,36 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in ADMIN_IDS:
         return
     
-    # Test OTP extraction
-    test_message = "# Snapchat 157737 is your one time passcode for phone enrollment"
-    otp = extract_otp_from_message(test_message)
-    
-    await update.message.reply_text(
-        f"🧪 Test Results:\n"
-        f"Test Message: {test_message}\n"
-        f"Extracted OTP: {otp}\n"
-        f"Active Monitors: {list(active_number_monitors.keys())}"
-    )
+    args = context.args
+    if args and args[0].isdigit():
+        # Test specific phone number
+        phone_number = args[0]
+        await update.message.reply_text(f"🔍 Testing OTP for number: {phone_number}")
+        
+        # Check SMS for this number
+        sms_info = await get_latest_sms_for_number(phone_number)
+        
+        if sms_info:
+            await update.message.reply_text(
+                f"📱 SMS Info for {phone_number}:\n"
+                f"Sender: {sms_info['sms']['sender']}\n"
+                f"Message: {sms_info['sms']['message']}\n"
+                f"OTP: {sms_info['otp']}\n"
+                f"Total Messages: {sms_info['total_messages']}"
+            )
+        else:
+            await update.message.reply_text(f"❌ No SMS found for {phone_number}")
+    else:
+        # Test OTP extraction
+        test_message = "# Snapchat 157737 is your one time passcode for phone enrollment"
+        otp = extract_otp_from_message(test_message)
+        
+        await update.message.reply_text(
+            f"🧪 Test Results:\n"
+            f"Test Message: {test_message}\n"
+            f"Extracted OTP: {otp}\n"
+            f"Active Monitors: {list(active_number_monitors.keys())}"
+        )
 
 async def cleanup_used_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Clean up numbers that have received OTPs"""
@@ -1210,6 +1231,34 @@ async def cleanup_used_numbers(update: Update, context: ContextTypes.DEFAULT_TYP
         f"✅ Kept {kept_count} numbers without OTPs\n"
         f"📊 Total processed: {deleted_count + kept_count}"
     )
+
+async def force_otp_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Force OTP check for a specific number"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        return
+    
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /forceotp <phone_number>")
+        return
+    
+    phone_number = args[0]
+    await update.message.reply_text(f"🔍 Force checking OTP for {phone_number}")
+    
+    # Get latest SMS and OTP
+    sms_info = await get_latest_sms_for_number(phone_number)
+    
+    if sms_info and sms_info['otp']:
+        await update.message.reply_text(
+            f"✅ OTP Found!\n"
+            f"Number: {phone_number}\n"
+            f"OTP: {sms_info['otp']}\n"
+            f"Sender: {sms_info['sms']['sender']}\n"
+            f"Time: {sms_info['sms']['datetime']}"
+        )
+    else:
+        await update.message.reply_text(f"❌ No OTP found for {phone_number}")
 
 async def list_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List all numbers in database"""
@@ -1878,6 +1927,7 @@ def main():
     app.add_handler(CommandHandler("list", list_numbers))
     app.add_handler(CommandHandler("addlist", addlist))
     app.add_handler(CommandHandler("cleanup", cleanup_used_numbers))
+    app.add_handler(CommandHandler("forceotp", force_otp_check))
     app.add_handler(CallbackQueryHandler(check_join, pattern="check_join"))
     app.add_handler(CallbackQueryHandler(request_number, pattern="request_number"))
     app.add_handler(CallbackQueryHandler(send_number, pattern="^country_"))
