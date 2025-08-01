@@ -30,6 +30,10 @@ from config import *
 TIMEZONE = pytz.timezone(TIMEZONE_NAME)
 logging.basicConfig(level=getattr(logging, LOGGING_LEVEL))
 
+# Session management - initialize from config
+CURRENT_SMS_API_COOKIE = SMS_API_COOKIE
+logging.info(f"🔑 Initialized SMS API session from config: {CURRENT_SMS_API_COOKIE[:20]}...{CURRENT_SMS_API_COOKIE[-10:]}")
+
 # Bot state variables
 uploaded_csv = None
 user_states = {}  # Store user states for country input
@@ -37,6 +41,64 @@ manual_numbers = {}  # Store manual numbers for each user
 current_user_numbers = {}  # Track current number for each user
 user_monitoring_sessions = {}  # Track multiple monitoring sessions per user
 active_number_monitors = {}  # Store active monitors for each number
+
+# === SESSION MANAGEMENT FUNCTIONS ===
+def reload_config_session():
+    """Reload SMS API session from config file"""
+    global CURRENT_SMS_API_COOKIE
+    try:
+        import importlib
+        import config
+        importlib.reload(config)
+        
+        old_session = CURRENT_SMS_API_COOKIE
+        CURRENT_SMS_API_COOKIE = config.SMS_API_COOKIE
+        
+        if old_session != CURRENT_SMS_API_COOKIE:
+            logging.info(f"🔄 SMS session reloaded from config file")
+            logging.info(f"🔑 Old: {old_session[:20]}...{old_session[-10:]}")
+            logging.info(f"🔑 New: {CURRENT_SMS_API_COOKIE[:20]}...{CURRENT_SMS_API_COOKIE[-10:]}")
+            return True
+        return False
+    except Exception as e:
+        logging.error(f"❌ Failed to reload config session: {e}")
+        return False
+
+def get_current_sms_cookie():
+    """Get the current active SMS API cookie"""
+    return CURRENT_SMS_API_COOKIE
+
+def update_runtime_session(new_cookie):
+    """Update the runtime session without modifying config file"""
+    global CURRENT_SMS_API_COOKIE
+    old_session = CURRENT_SMS_API_COOKIE
+    CURRENT_SMS_API_COOKIE = new_cookie
+    logging.info(f"🔄 Runtime SMS session updated")
+    logging.info(f"🔑 Old: {old_session[:20]}...{old_session[-10:]}")
+    logging.info(f"🔑 New: {CURRENT_SMS_API_COOKIE[:20]}...{CURRENT_SMS_API_COOKIE[-10:]}")
+
+def update_config_file_session(new_cookie):
+    """Update the session in config.py file"""
+    try:
+        with open('config.py', 'r') as f:
+            config_content = f.read()
+        
+        # Replace the SMS_API_COOKIE line
+        import re
+        config_content = re.sub(
+            r'SMS_API_COOKIE = "[^"]*"',
+            f'SMS_API_COOKIE = "{new_cookie}"',
+            config_content
+        )
+        
+        with open('config.py', 'w') as f:
+            f.write(config_content)
+        
+        logging.info(f"✅ Config file updated with new session")
+        return True
+    except Exception as e:
+        logging.error(f"❌ Failed to update config file: {e}")
+        return False
 
 # === UTILITY FUNCTIONS ===
 def extract_otp_from_message(message):
@@ -967,7 +1029,7 @@ async def check_sms_for_number(phone_number, date_str=None):
         'Referer': f'{SMS_API_BASE_URL}/ints/agent/SMSCDRReports',
         'Accept-Encoding': 'gzip, deflate',
         'Accept-Language': 'en-US,en;q=0.9,ks-IN;q=0.8,ks;q=0.7',
-        'Cookie': SMS_API_COOKIE
+                    'Cookie': get_current_sms_cookie()
     }
     
     try:
@@ -990,8 +1052,16 @@ async def check_sms_for_number(phone_number, date_str=None):
                     # Check if we got redirected to login page
                     if 'login' in response_text.lower() or 'msi sms | login' in response_text.lower():
                         logging.error(f"❌ SMS API session expired - redirected to login page")
-                        logging.error(f"🔑 Need to update SMS_API_COOKIE with fresh session")
-                        return None
+                        logging.error(f"🔑 Current session: {get_current_sms_cookie()[:20]}...{get_current_sms_cookie()[-10:]}")
+                        
+                        # Try to reload session from config file
+                        logging.info(f"🔄 Attempting to reload session from config file...")
+                        if reload_config_session():
+                            logging.info(f"✅ Session reloaded, retrying API call...")
+                            # Don't return None, let it try again with new session
+                        else:
+                            logging.error(f"❌ Config reload failed - need manual session update")
+                            return None
                     
                     # Always try to parse as JSON regardless of content type
                     try:
@@ -1174,7 +1244,7 @@ async def check_api_connection(update: Update, context: ContextTypes.DEFAULT_TYP
             'Referer': f'{SMS_API_BASE_URL}/ints/agent/SMSCDRReports',
             'Accept-Encoding': 'gzip, deflate',
             'Accept-Language': 'en-US,en;q=0.9,ks-IN;q=0.8,ks;q=0.7',
-            'Cookie': SMS_API_COOKIE
+            'Cookie': get_current_sms_cookie()
         }
         
         import time
@@ -1228,7 +1298,7 @@ async def check_api_connection(update: Update, context: ContextTypes.DEFAULT_TYP
                     f"🔧 **Content-Type**: {content_type}",
                     f"📊 **JSON Valid**: {'✅ Yes' if json_valid else '❌ No'}",
                     f"📈 **Test Query Records**: {record_count}",
-                    f"🍪 **Cookie**: {SMS_API_COOKIE[:20]}...{SMS_API_COOKIE[-10:]}",
+                    f"🍪 **Cookie**: {get_current_sms_cookie()[:20]}...{get_current_sms_cookie()[-10:]}",
                 ]
                 
                 # Add issues section
@@ -1580,7 +1650,7 @@ async def update_sms_session(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "4. Refresh page\n"
             "5. Find request to data_smscdr.php\n"
             "6. Copy Cookie header value\n\n"
-            f"**Current session:** `{SMS_API_COOKIE[:20]}...{SMS_API_COOKIE[-10:]}`",
+            f"**Current session:** `{get_current_sms_cookie()[:20]}...{get_current_sms_cookie()[-10:]}`",
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -1632,30 +1702,14 @@ async def update_sms_session(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         import json
                         json.loads(response_text)  # Validate JSON
                         
-                        # Session test passed, update globally
-                        global SMS_API_COOKIE
-                        old_cookie = SMS_API_COOKIE
-                        SMS_API_COOKIE = new_cookie
+                        # Session test passed, update both runtime and config
+                        old_cookie = get_current_sms_cookie()
                         
-                        # Update config.py file
-                        try:
-                            with open('config.py', 'r') as f:
-                                config_content = f.read()
-                            
-                            # Replace the SMS_API_COOKIE line
-                            import re
-                            config_content = re.sub(
-                                r'SMS_API_COOKIE = "[^"]*"',
-                                f'SMS_API_COOKIE = "{new_cookie}"',
-                                config_content
-                            )
-                            
-                            with open('config.py', 'w') as f:
-                                f.write(config_content)
-                            
-                            config_updated = "✅ Config file updated"
-                        except Exception as e:
-                            config_updated = f"⚠️ Config file update failed: {e}"
+                        # Update runtime session (immediate effect)
+                        update_runtime_session(new_cookie)
+                        
+                        # Update config file (for bot restart persistence) 
+                        config_updated = "✅ Config file updated" if update_config_file_session(new_cookie) else "⚠️ Config file update failed"
                         
                         await update.message.reply_text(
                             f"✅ **SMS API Session Updated Successfully!**\n\n"
@@ -1680,6 +1734,36 @@ async def update_sms_session(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     
     except Exception as e:
         await update.message.reply_text(f"❌ Session test failed: {str(e)}")
+
+async def reload_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reload SMS API session from config file"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        return
+    
+    await update.message.reply_text("🔄 Reloading session from config file...")
+    
+    old_session = get_current_sms_cookie()
+    session_changed = reload_config_session()
+    new_session = get_current_sms_cookie()
+    
+    if session_changed:
+        await update.message.reply_text(
+            f"✅ **Session Reloaded from Config File**\n\n"
+            f"🔑 **Old session:** `{old_session[:20]}...{old_session[-10:]}`\n"
+            f"🔑 **New session:** `{new_session[:20]}...{new_session[-10:]}`\n\n"
+            f"🔄 **Status:** Active immediately\n"
+            f"📁 **Source:** config.py file\n\n"
+            f"💡 **Tip:** Use `/checkapi` to verify connection",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        await update.message.reply_text(
+            f"ℹ️ **No Session Change**\n\n"
+            f"🔑 **Current session:** `{new_session[:20]}...{new_session[-10:]}`\n\n"
+            f"✅ Session is already up to date with config file",
+            parse_mode=ParseMode.MARKDOWN
+        )
 
 async def reset_current_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reset current number tracking for debugging"""
@@ -2438,6 +2522,7 @@ def main():
     app.add_handler(CommandHandler("resetnumber", reset_current_number))
     app.add_handler(CommandHandler("morningcalls", show_my_morning_calls))
     app.add_handler(CommandHandler("updatesms", update_sms_session))
+    app.add_handler(CommandHandler("reloadsession", reload_session))
     app.add_handler(CallbackQueryHandler(check_join, pattern="check_join"))
     app.add_handler(CallbackQueryHandler(request_number, pattern="request_number"))
     app.add_handler(CallbackQueryHandler(send_number, pattern="^country_"))
