@@ -1141,19 +1141,43 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await update.message.reply_text("❌ Operation cancelled.")
             
             else:
-                # Process the number
-                cleaned_number = clean_number(text)
-                # Accept numbers with 8+ digits (including country codes)
-                if cleaned_number and len(cleaned_number) >= 8 and cleaned_number.isdigit():
-                    manual_numbers[user_id].append(cleaned_number)
-                    await update.message.reply_text(
-                        f"✅ Number added: {cleaned_number}\n"
-                        f"📱 Total numbers: {len(manual_numbers[user_id])}\n\n"
-                        "Enter more numbers or send 'done' when finished."
-                    )
+                # Process multiple numbers from the same message
+                lines = text.split('\n')
+                valid_numbers = []
+                invalid_numbers = []
+                
+                for line in lines:
+                    line = line.strip()
+                    if line:  # Skip empty lines
+                        cleaned_number = clean_number(line)
+                        # Accept numbers with 8+ digits (including country codes)
+                        if cleaned_number and len(cleaned_number) >= 8 and cleaned_number.isdigit():
+                            valid_numbers.append(cleaned_number)
+                        else:
+                            invalid_numbers.append(line)
+                
+                # Add valid numbers
+                for number in valid_numbers:
+                    manual_numbers[user_id].append(number)
+                
+                # Send response
+                if valid_numbers:
+                    response = f"✅ Added {len(valid_numbers)} number(s):\n"
+                    for number in valid_numbers:
+                        response += f"• {number}\n"
+                    response += f"\n📱 Total numbers: {len(manual_numbers[user_id])}\n\n"
+                    
+                    if invalid_numbers:
+                        response += f"❌ Invalid numbers (skipped):\n"
+                        for number in invalid_numbers:
+                            response += f"• {number}\n"
+                        response += "\n"
+                    
+                    response += "Enter more numbers or send 'done' when finished."
+                    await update.message.reply_text(response)
                 else:
                     await update.message.reply_text(
-                        "❌ Invalid number format. Please enter a valid phone number.\n"
+                        "❌ No valid numbers found. Please enter valid phone numbers.\n"
                         "Example: 94741854027\n"
                         f"Your input: {text}"
                     )
