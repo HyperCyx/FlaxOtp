@@ -961,33 +961,29 @@ async def check_sms_for_number(phone_number, date_str=None):
                         logging.error(f"🔑 Need to update SMS_API_COOKIE with fresh session")
                         return None
                     
-                    if 'application/json' in content_type or 'text/html' in content_type:
-                        try:
-                            data = await response.json()
-                            logging.info(f"API response data: {data}")
-                            return data
-                        except Exception as json_error:
-                            logging.error(f"JSON parsing failed: {json_error}")
-                            logging.info(f"Response text: {response_text[:500]}...")  # Log first 500 chars
-                            
-                            # Try to extract JSON from HTML response
-                            if 'aaData' in response_text:
-                                try:
-                                    # Find JSON part in the response
-                                    start = response_text.find('{')
-                                    end = response_text.rfind('}') + 1
-                                    if start != -1 and end != 0:
-                                        json_part = response_text[start:end]
-                                        data = json.loads(json_part)
-                                        logging.info(f"Extracted JSON data: {data}")
-                                        return data
-                                except Exception as extract_error:
-                                    logging.error(f"Failed to extract JSON: {extract_error}")
-                            
-                            return None
-                    else:
-                        logging.error(f"Unexpected content type: {content_type}")
-                        logging.info(f"Response text: {response_text[:500]}...")
+                    # Always try to parse as JSON regardless of content type
+                    try:
+                        data = await response.json()
+                        logging.info(f"API response data: {data}")
+                        return data
+                    except Exception as json_error:
+                        logging.error(f"JSON parsing failed: {json_error}")
+                        logging.info(f"Response text: {response_text[:500]}...")  # Log first 500 chars
+                        
+                        # Try to extract JSON from HTML response
+                        if 'aaData' in response_text:
+                            try:
+                                # Find JSON part in the response
+                                start = response_text.find('{')
+                                end = response_text.rfind('}') + 1
+                                if start != -1 and end != 0:
+                                    json_part = response_text[start:end]
+                                    data = json.loads(json_part)
+                                    logging.info(f"Extracted JSON data: {data}")
+                                    return data
+                            except Exception as extract_error:
+                                logging.error(f"Failed to extract JSON: {extract_error}")
+                        
                         return None
                 else:
                     response_text = await response.text()
