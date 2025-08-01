@@ -2212,6 +2212,7 @@ async def background_otp_cleanup_task(app):
             logging.info(f"🔍 Checking {len(all_numbers)} numbers for OTPs...")
             
             cleaned_count = 0
+            skipped_count = 0
             
             for number_doc in all_numbers:
                 try:
@@ -2220,6 +2221,18 @@ async def background_otp_cleanup_task(app):
                     
                     if not phone_number:
                         continue
+                    
+                    # Skip numbers that have active monitoring sessions
+                    has_active_session = False
+                    for session_id, session_data in active_number_monitors.items():
+                        if session_data.get('phone_number') == phone_number and not session_data.get('stop', True):
+                            has_active_session = True
+                            logging.info(f"⏭️ Background cleanup: Skipping {phone_number} - has active monitoring session {session_id}")
+                            break
+                    
+                    if has_active_session:
+                        skipped_count += 1
+                        continue  # Skip this number, let real-time monitoring handle it
                     
                     # Check if this number has received an OTP
                     sms_info = await get_latest_sms_for_number(phone_number)
@@ -2316,9 +2329,10 @@ async def background_otp_cleanup_task(app):
                     continue
             
             if cleaned_count > 0:
-                logging.info(f"✅ Background cleanup completed: {cleaned_count} numbers cleaned")
+                logging.info(f"✅ Background cleanup completed: {cleaned_count} numbers cleaned, {skipped_count} numbers skipped (active sessions)")
             else:
-                logging.info(f"ℹ️ Background cleanup completed: No numbers with OTPs found")
+                skip_info = f", {skipped_count} numbers skipped (active sessions)" if skipped_count > 0 else ""
+                logging.info(f"ℹ️ Background cleanup completed: No numbers with OTPs found{skip_info}")
                 
         except Exception as e:
             logging.error(f"❌ Background cleanup task error: {e}")
