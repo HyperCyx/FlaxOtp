@@ -496,8 +496,17 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_number = current_user_numbers.get(user_id)
     logging.info(f"Current number for user {user_id}: {current_number}")
     
+    # First, let's see all available numbers for this country
+    all_numbers_pipeline = [
+        {"$match": {"country_code": country_code}},
+        {"$project": {"number": 1, "_id": 0}}
+    ]
+    all_numbers = await coll.aggregate(all_numbers_pipeline).to_list(length=None)
+    all_number_list = [doc["number"] for doc in all_numbers]
+    logging.info(f"All available numbers for {country_code}: {all_number_list}")
+    
     # Get a different random number from the available numbers for this country
-    if current_number:
+    if current_number and current_number in all_number_list and len(all_number_list) > 1:
         # Exclude current number and get a different one
         pipeline = [
             {"$match": {"country_code": country_code, "number": {"$ne": current_number}}},
@@ -505,12 +514,15 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         logging.info(f"Trying to get different number, excluding: {current_number}")
     else:
-        # No current number, get any random number
+        # No current number or only one number available, get any random number
         pipeline = [
             {"$match": {"country_code": country_code}},
             {"$sample": {"size": 1}}
         ]
-        logging.info("No current number to exclude, getting any random number")
+        if current_number:
+            logging.info(f"Only one number available or current number not found, getting any number")
+        else:
+            logging.info("No current number to exclude, getting any random number")
     
     results = await coll.aggregate(pipeline).to_list(length=1)
     result = results[0] if results else None
@@ -526,6 +538,16 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if result and "number" in result:
         number = result["number"]
         formatted_number = format_number_display(number)
+        
+        # Check if this is actually a different number
+        if current_number and number == current_number:
+            logging.warning(f"Got same number again: {number}")
+            if len(all_number_list) > 1:
+                await query.answer(f"⚠️ Error: Got same number. Available: {len(all_number_list)} numbers. Try again.", show_alert=True)
+                return
+            else:
+                await query.answer(f"⚠️ Only one number available for {country_name}. Try another country.", show_alert=True)
+                return
         
         # Track current number for this user
         user_id = query.from_user.id
@@ -571,9 +593,13 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         # No different numbers available for this country
         if current_number:
-            # Try to get the same number if no different one is available
-            logging.info(f"No different number available, keeping current: {current_number}")
-            await query.answer("⚠️ No different number available for this country. Try another country.", show_alert=True)
+            # Check if we got the same number
+            if len(all_number_list) == 1:
+                logging.info(f"Only one number available for {country_code}: {all_number_list[0]}")
+                await query.answer(f"⚠️ Only one number available for {country_name}. Try another country.", show_alert=True)
+            else:
+                logging.info(f"No different number available, keeping current: {current_number}")
+                await query.answer(f"⚠️ No different number available for {country_name}. Available: {len(all_number_list)} numbers. Try another country.", show_alert=True)
         else:
             # No numbers available at all
             keyboard = await countries_keyboard(db)
@@ -1328,6 +1354,19 @@ async def check_country_numbers(update: Update, context: ContextTypes.DEFAULT_TY
     
     await update.message.reply_text(status_text)
 
+async def reset_current_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reset current number tracking for debugging"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        return
+    
+    if user_id in current_user_numbers:
+        old_number = current_user_numbers[user_id]
+        del current_user_numbers[user_id]
+        await update.message.reply_text(f"✅ Reset current number tracking for user {user_id}\nOld number: {old_number}")
+    else:
+        await update.message.reply_text(f"ℹ️ No current number tracking found for user {user_id}")
+
 async def list_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List all numbers in database"""
     user_id = update.effective_user.id
@@ -1998,6 +2037,7 @@ def main():
     app.add_handler(CommandHandler("forceotp", force_otp_check))
     app.add_handler(CommandHandler("monitoring", check_monitoring_status))
     app.add_handler(CommandHandler("countrynumbers", check_country_numbers))
+    app.add_handler(CommandHandler("resetnumber", reset_current_number))
     app.add_handler(CallbackQueryHandler(check_join, pattern="check_join"))
     app.add_handler(CallbackQueryHandler(request_number, pattern="request_number"))
     app.add_handler(CallbackQueryHandler(send_number, pattern="^country_"))
