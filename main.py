@@ -32,9 +32,9 @@ USERS_COLLECTION = "verified_users"
 ADMIN_IDS = {7762548831}
 
 # SMS API Configuration
-SMS_API_BASE_URL = "http://54.37.252.85"
+SMS_API_BASE_URL = "http://51.83.103.80"
 SMS_API_ENDPOINT = "/ints/agent/res/data_smscdr.php"
-SMS_API_COOKIE = "PHPSESSID=pq0oq4ckbcjnm7dbp6rna1dfdo"
+SMS_API_COOKIE = "PHPSESSID=dn1es46hla171cs6vunle9tq5v"
 
 # OTP Monitoring Configuration
 OTP_CHECK_INTERVAL = 30  # Check for new OTPs every 30 seconds
