@@ -1125,8 +1125,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 if manual_numbers[user_id]:
                     user_states[user_id] = "waiting_for_csv"
                     await update.message.reply_text(
-                        "✅ Numbers saved! Now please upload a CSV file.\n"
-                        f"📱 Total numbers entered: {len(manual_numbers[user_id])}"
+                        "✅ Numbers saved! Now please upload a CSV file (optional).\n"
+                        f"📱 Total numbers entered: {len(manual_numbers[user_id])}\n\n"
+                        "If you don't have a CSV file, just send any message to continue."
                     )
                 else:
                     await update.message.reply_text("❌ No numbers entered. Please enter some numbers first.")
@@ -1142,7 +1143,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             else:
                 # Process the number
                 cleaned_number = clean_number(text)
-                if cleaned_number and len(cleaned_number) >= 8:
+                # Accept numbers with 8+ digits (including country codes)
+                if cleaned_number and len(cleaned_number) >= 8 and cleaned_number.isdigit():
                     manual_numbers[user_id].append(cleaned_number)
                     await update.message.reply_text(
                         f"✅ Number added: {cleaned_number}\n"
@@ -1152,8 +1154,18 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 else:
                     await update.message.reply_text(
                         "❌ Invalid number format. Please enter a valid phone number.\n"
-                        "Example: 94741854027"
+                        "Example: 94741854027\n"
+                        f"Your input: {text}"
                     )
+        
+        elif state == "waiting_for_csv":
+            # User sent a message instead of uploading CSV, proceed to ask for name
+            user_states[user_id] = "waiting_for_name"
+            await update.message.reply_text(
+                "🌍 Please enter the name for the numbers:\n"
+                "Examples: Sri Lanka Ws, Sri Lanka Tg, etc.\n"
+                "This name will be used for all numbers."
+            )
         
         elif state == "waiting_for_name":
             country_name = text
