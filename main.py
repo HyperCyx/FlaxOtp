@@ -339,7 +339,21 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if phone_number in active_number_monitors:
             await stop_otp_monitoring(phone_number)
 
-    result = await coll.find_one({"country_code": country_code})
+    # Get a random number from the available numbers for this country
+    pipeline = [
+        {"$match": {"country_code": country_code}},
+        {"$sample": {"size": 1}}
+    ]
+    results = await coll.aggregate(pipeline).to_list(length=1)
+    result = results[0] if results else None
+    
+    # Debug logging
+    logging.info(f"Change number requested for country: {country_code}")
+    logging.info(f"Found {len(results)} numbers for this country")
+    if result:
+        logging.info(f"Selected number: {result.get('number', 'N/A')}")
+    else:
+        logging.info("No numbers found for this country")
     
     if result and "number" in result:
         number = result["number"]
