@@ -2183,9 +2183,109 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             country_name = text
             await process_all_numbers_with_country(update, context, country_name)
 
+async def background_otp_cleanup_task(app):
+    """Background task that runs every minute to check all numbers for OTPs and clean them"""
+    logging.info("🔄 Background OTP cleanup task started - checking every minute")
+    
+    while True:
+        try:
+            await asyncio.sleep(60)  # Wait 1 minute
+            
+            logging.info("🔍 Starting background OTP cleanup check...")
+            
+            # Get database connection
+            if "db" not in app.bot_data:
+                logging.error("❌ Database not available for background cleanup")
+                continue
+                
+            db = app.bot_data["db"]
+            coll = db[COLLECTION_NAME]
+            countries_coll = db[COUNTRIES_COLLECTION]
+            
+            # Get all numbers from database
+            all_numbers = await coll.find({}).to_list(length=None)
+            
+            if not all_numbers:
+                logging.info("ℹ️ No numbers in database to check")
+                continue
+                
+            logging.info(f"🔍 Checking {len(all_numbers)} numbers for OTPs...")
+            
+            cleaned_count = 0
+            
+            for number_doc in all_numbers:
+                try:
+                    phone_number = str(number_doc.get('number', ''))
+                    country_code = number_doc.get('country_code', '')
+                    
+                    if not phone_number:
+                        continue
+                    
+                    # Check if this number has received an OTP
+                    sms_info = await get_latest_sms_for_number(phone_number)
+                    
+                    if sms_info and sms_info.get('otp'):
+                        otp = sms_info['otp']
+                        sender = sms_info['sms'].get('sender', 'Unknown')
+                        
+                        logging.info(f"🎯 Background cleanup: Found OTP for {phone_number} - {sender}: {otp}")
+                        
+                        # Delete the number from database
+                        delete_result = await coll.delete_one({"number": phone_number})
+                        
+                        if delete_result.deleted_count > 0:
+                            # Update country count
+                            if country_code:
+                                await countries_coll.update_one(
+                                    {"country_code": country_code},
+                                    {"$inc": {"number_count": -1}}
+                                )
+                            
+                            cleaned_count += 1
+                            formatted_number = format_number_display(phone_number)
+                            
+                            logging.info(f"🗑️ Background cleanup: Deleted {phone_number} after detecting OTP: {otp}")
+                            
+                            # Send notification to all admins about the cleanup
+                            for admin_id in ADMIN_IDS:
+                                try:
+                                    await app.bot.send_message(
+                                        chat_id=admin_id,
+                                        text=f"🔄 **Background Cleanup**\n\n"
+                                             f"📞 Number: {formatted_number}\n"
+                                             f"🔐 {sender} : {otp}\n"
+                                             f"🗑️ Auto-deleted from server\n\n"
+                                             f"ℹ️ _Background cleanup at {datetime.now(TIMEZONE).strftime('%H:%M:%S')}_",
+                                        parse_mode=ParseMode.MARKDOWN
+                                    )
+                                except Exception as notify_error:
+                                    logging.error(f"Failed to notify admin {admin_id}: {notify_error}")
+                        
+                        # Small delay between number checks to avoid overwhelming the API
+                        await asyncio.sleep(1)
+                        
+                except Exception as number_error:
+                    logging.error(f"Error checking number {phone_number}: {number_error}")
+                    continue
+            
+            if cleaned_count > 0:
+                logging.info(f"✅ Background cleanup completed: {cleaned_count} numbers cleaned")
+            else:
+                logging.info(f"ℹ️ Background cleanup completed: No numbers with OTPs found")
+                
+        except Exception as e:
+            logging.error(f"❌ Background cleanup task error: {e}")
+            # Continue running despite errors
+            continue
+
 # === MAIN BOT SETUP ===
+async def post_init(app):
+    """Initialize background tasks after bot startup"""
+    logging.info("🔄 Starting background cleanup task...")
+    asyncio.create_task(background_otp_cleanup_task(app))
+
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
     mongo_client = AsyncIOMotorClient(MONGO_URI)
     db = mongo_client[DB_NAME]
@@ -2216,7 +2316,7 @@ def main():
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(MessageHandler(filters.Document.FileExtension("csv") & filters.User(ADMIN_IDS), upload_csv))
     app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), handle_text_message))
-
+    
     logging.info("Bot started and polling...")
     app.run_polling()
 
