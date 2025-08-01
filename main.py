@@ -31,6 +31,7 @@ TIMEZONE = pytz.timezone('Asia/Riyadh')
 logging.basicConfig(level=logging.INFO)
 uploaded_csv = None
 user_states = {}  # Store user states for country input
+manual_numbers = {}  # Store manual numbers for each user
 
 # === UTILITY FUNCTIONS ===
 def get_country_flag(country_code):
@@ -520,6 +521,29 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text("\n".join(message_lines))
 
+async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add command to enter numbers manually and upload CSV"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        return
+
+    # Initialize user state
+    user_states[user_id] = "waiting_for_manual_numbers"
+    manual_numbers[user_id] = []
+    
+    await update.message.reply_text(
+        "📱 **Add Numbers Command**\n\n"
+        "Please enter the phone numbers one by one (one number per line):\n"
+        "Example:\n"
+        "94741854027\n"
+        "94775995195\n"
+        "94743123866\n\n"
+        "Send 'done' when you're finished entering numbers.\n"
+        "Send 'cancel' to cancel the operation.",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Test command to verify bot is working"""
     user_id = update.effective_user.id
@@ -648,15 +672,23 @@ async def upload_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_bytes.seek(0)
     uploaded_csv = file_bytes
 
-    # Set user state to wait for country input
-    user_states[user_id] = "waiting_for_country"
-    
-    # Ask for country name
-    await update.message.reply_text(
-        "🌍 Please enter the country name for the numbers in this CSV file:\n"
-        "Examples: India Ws, India Tg, Saudi Arabia, USA, etc.\n"
-        "You can use custom names like 'India Ws' for WhatsApp numbers or 'India Tg' for Telegram numbers."
-    )
+    # Check if user is in add command flow
+    if user_id in user_states and user_states[user_id] == "waiting_for_csv":
+        # User is in /add command flow, ask for name
+        user_states[user_id] = "waiting_for_name"
+        await update.message.reply_text(
+            "🌍 Please enter the name for all the numbers (manual + CSV):\n"
+            "Examples: Sri Lanka Ws, Sri Lanka Tg, etc.\n"
+            "This name will be used for all numbers (manual and CSV)."
+        )
+    else:
+        # Regular CSV upload flow
+        user_states[user_id] = "waiting_for_country"
+        await update.message.reply_text(
+            "🌍 Please enter the country name for the numbers in this CSV file:\n"
+            "Examples: India Ws, India Tg, Saudi Arabia, USA, etc.\n"
+            "You can use custom names like 'India Ws' for WhatsApp numbers or 'India Tg' for Telegram numbers."
+        )
 
 async def addlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global uploaded_csv
@@ -772,6 +804,174 @@ async def addlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
             document=report_file,
             filename="number_upload_report.csv",
             caption="📄 Complete number upload report"
+        )
+
+async def process_all_numbers_with_country(update: Update, context: ContextTypes.DEFAULT_TYPE, country_name):
+    """Process both manual numbers and CSV file with the provided country name"""
+    global uploaded_csv
+    user_id = update.effective_user.id
+    
+    await update.message.reply_text("🔍 Analyzing and processing all numbers...")
+
+    db = context.bot_data["db"]
+    coll = db[COLLECTION_NAME]
+    countries_coll = db[COUNTRIES_COLLECTION]
+
+    # Get manual numbers
+    manual_nums = manual_numbers.get(user_id, [])
+    
+    # Process CSV file if available
+    csv_numbers = []
+    if uploaded_csv:
+        csv_numbers, process_msg = await process_csv_file(uploaded_csv)
+        if not csv_numbers:
+            csv_numbers = []
+
+    # Combine all numbers
+    all_numbers = []
+    
+    # Add manual numbers
+    for number in manual_nums:
+        all_numbers.append({
+            'number': number,
+            'original_number': number,
+            'country_code': None,
+            'range': '',
+            'source': 'manual'
+        })
+    
+    # Add CSV numbers
+    for num_data in csv_numbers:
+        all_numbers.append({
+            'number': num_data['number'],
+            'original_number': num_data['original_number'],
+            'country_code': None,
+            'range': num_data.get('range', ''),
+            'source': 'csv'
+        })
+
+    if not all_numbers:
+        await update.message.reply_text("❌ No numbers found to process.")
+        return
+
+    # Detect the most common country from all numbers
+    detected_countries = {}
+    for num_data in all_numbers:
+        detected_country = detect_country_code(num_data['number'], num_data.get('range', ''))
+        if detected_country:
+            detected_countries[detected_country] = detected_countries.get(detected_country, 0) + 1
+    
+    # Get the most common detected country
+    most_common_country = None
+    if detected_countries:
+        most_common_country = max(detected_countries, key=detected_countries.get)
+    
+    # Use the provided country name as the country code (custom naming)
+    country_code = country_name.lower().replace(" ", "_")
+    country_display_name = country_name
+    
+    # Store the detected country for flag purposes
+    detected_country_code = most_common_country if most_common_country else "unknown"
+
+    # Set country code for all numbers
+    for num_data in all_numbers:
+        num_data['country_code'] = country_code
+
+    # Upload to database
+    inserted_count = 0
+    number_details = []
+    manual_count = 0
+    csv_count = 0
+
+    for num_data in all_numbers:
+        try:
+            # Insert number with both custom country code and detected country
+            await coll.insert_one({
+                "country_code": num_data['country_code'],
+                "number": num_data['number'],
+                "original_number": num_data['original_number'],
+                "range": num_data['range'],
+                "detected_country": detected_country_code,
+                "added_at": datetime.now(TIMEZONE)
+            })
+            
+            inserted_count += 1
+            if num_data['source'] == 'manual':
+                manual_count += 1
+            else:
+                csv_count += 1
+            
+            # Get country flag from detected country, but display custom name
+            flag = get_country_flag(detected_country_code)
+            number_details.append(f"{flag} {num_data['number']} - {country_display_name}")
+        except Exception as e:
+            logging.error(f"Error inserting number: {e}")
+            continue
+
+    # Update countries collection
+    await countries_coll.update_one(
+        {"country_code": country_code},
+        {"$set": {
+            "country_code": country_code,
+            "display_name": country_display_name,
+            "detected_country": detected_country_code,
+            "last_updated": datetime.now(TIMEZONE),
+            "number_count": inserted_count
+        }},
+        upsert=True
+    )
+
+    # Clear all user data
+    uploaded_csv = None
+    if user_id in user_states:
+        del user_states[user_id]
+    if user_id in manual_numbers:
+        del manual_numbers[user_id]
+
+    # Prepare report
+    report_lines = [
+        "📊 Combined Upload Report:",
+        f"✅ Successfully uploaded {inserted_count} numbers",
+        f"📱 Manual numbers: {manual_count}",
+        f"📄 CSV numbers: {csv_count}",
+        f"🌍 Custom Name: {country_display_name}",
+    ]
+    
+    if most_common_country:
+        detected_country_name = "Unknown"
+        try:
+            country = pycountry.countries.get(alpha_2=most_common_country.upper())
+            if country:
+                detected_country_name = country.name
+        except:
+            pass
+        report_lines.append(f"🏳️ Detected Country: {detected_country_name} ({most_common_country.upper()})")
+    
+    report_lines.extend([
+        "",
+        "📋 Sample numbers:",
+        *number_details[:10]
+    ])
+
+    if len(number_details) > 10:
+        report_lines.append(f"\n... and {len(number_details) - 10} more numbers")
+
+    # Send report
+    await update.message.reply_text("\n".join(report_lines))
+
+    # Send complete list as file if many numbers
+    if len(number_details) > 10:
+        report_file = BytesIO()
+        report_file.write("\n".join([
+            "Number,Custom Country,Detected Country,Source",
+            *[f"{num.split(' - ')[0]},{country_display_name},{detected_country_code.upper()},{'manual' if i < manual_count else 'csv'}" 
+              for i, num in enumerate(number_details)]
+        ]).encode('utf-8'))
+        report_file.seek(0)
+        await update.message.reply_document(
+            document=report_file,
+            filename="combined_number_upload_report.csv",
+            caption="📄 Complete combined number upload report"
         )
 
 async def process_csv_with_country(update: Update, context: ContextTypes.DEFAULT_TYPE, country_name):
@@ -906,15 +1106,58 @@ async def process_csv_with_country(update: Update, context: ContextTypes.DEFAULT
         )
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text messages for country input"""
+    """Handle text messages for various inputs"""
     user_id = update.effective_user.id
     
     if user_id not in ADMIN_IDS:
         return
     
-    if user_id in user_states and user_states[user_id] == "waiting_for_country":
-        country_name = update.message.text.strip()
-        await process_csv_with_country(update, context, country_name)
+    if user_id in user_states:
+        state = user_states[user_id]
+        text = update.message.text.strip()
+        
+        if state == "waiting_for_country":
+            country_name = text
+            await process_csv_with_country(update, context, country_name)
+        
+        elif state == "waiting_for_manual_numbers":
+            if text.lower() == "done":
+                if manual_numbers[user_id]:
+                    user_states[user_id] = "waiting_for_csv"
+                    await update.message.reply_text(
+                        "✅ Numbers saved! Now please upload a CSV file.\n"
+                        f"📱 Total numbers entered: {len(manual_numbers[user_id])}"
+                    )
+                else:
+                    await update.message.reply_text("❌ No numbers entered. Please enter some numbers first.")
+            
+            elif text.lower() == "cancel":
+                # Clear user state
+                if user_id in user_states:
+                    del user_states[user_id]
+                if user_id in manual_numbers:
+                    del manual_numbers[user_id]
+                await update.message.reply_text("❌ Operation cancelled.")
+            
+            else:
+                # Process the number
+                cleaned_number = clean_number(text)
+                if cleaned_number and len(cleaned_number) >= 8:
+                    manual_numbers[user_id].append(cleaned_number)
+                    await update.message.reply_text(
+                        f"✅ Number added: {cleaned_number}\n"
+                        f"📱 Total numbers: {len(manual_numbers[user_id])}\n\n"
+                        "Enter more numbers or send 'done' when finished."
+                    )
+                else:
+                    await update.message.reply_text(
+                        "❌ Invalid number format. Please enter a valid phone number.\n"
+                        "Example: 94741854027"
+                    )
+        
+        elif state == "waiting_for_name":
+            country_name = text
+            await process_all_numbers_with_country(update, context, country_name)
 
 # === MAIN BOT SETUP ===
 def main():
@@ -927,6 +1170,7 @@ def main():
     # Register handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("test", test_command))
+    app.add_handler(CommandHandler("add", add_command))
     app.add_handler(CommandHandler("delete", delete_country))
     app.add_handler(CommandHandler("deletenum", delete_number))
     app.add_handler(CommandHandler("deleteall", delete_all_numbers))
