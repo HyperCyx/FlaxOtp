@@ -334,6 +334,11 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     country_info = await countries_coll.find_one({"country_code": country_code})
     country_name = country_info["display_name"] if country_info else country_code
 
+    # Stop any active monitoring for this country
+    for phone_number in list(active_number_monitors.keys()):
+        if phone_number in active_number_monitors:
+            await stop_otp_monitoring(phone_number)
+
     result = await coll.find_one({"country_code": country_code})
     
     if result and "number" in result:
@@ -377,9 +382,12 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context
         )
     else:
+        # No numbers available for this country, show all available countries
         keyboard = await countries_keyboard(db)
         await query.edit_message_text(
-            f"⚠️ No more numbers available for {country_name}. Please select another country.",
+            f"⚠️ No more numbers available for {country_name}.\n"
+            f"📱 All numbers for this country have been used (received OTPs).\n\n"
+            f"🌍 Please select another country:",
             reply_markup=keyboard
         )
 
@@ -508,7 +516,8 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                                     # Show deletion message to user
                                     await context.bot.send_message(
                                         chat_id=chat_id,
-                                        text=f"✅ Number {formatted_number} has been deleted after receiving OTP: {current_otp}"
+                                        text=f"✅ Number {formatted_number} has been deleted after receiving OTP: {current_otp}\n\n"
+                                             f"🔄 Click 'Change' to get another number from the same country, or select a different country."
                                     )
                                     
                             except Exception as e:
