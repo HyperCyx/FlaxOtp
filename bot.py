@@ -336,7 +336,7 @@ async def is_user_verified(user_id, context):
     try:
         # First check database
         db = context.bot_data.get("db")
-        if db:
+        if db is not None:
             users_coll = db[USERS_COLLECTION]
             user = await users_coll.find_one({"user_id": user_id})
             if user:
