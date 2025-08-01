@@ -1676,6 +1676,7 @@ async def upload_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def addlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Process CSV file by asking for country name directly"""
     global uploaded_csv
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
@@ -1686,110 +1687,13 @@ async def addlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No CSV file found. Please upload the file first.")
         return
 
-    await update.message.reply_text("🔍 Analyzing and processing numbers...")
-
-    db = context.bot_data["db"]
-    coll = db[COLLECTION_NAME]
-    countries_coll = db[COUNTRIES_COLLECTION]
-
-    # Process CSV file
-    numbers, process_msg = await process_csv_file(uploaded_csv)
-    if not numbers:
-        await update.message.reply_text(f"❌ {process_msg}")
-        return
-
-    # Upload to database
-    inserted_count = 0
-    country_stats = {}
-    number_details = []
-
-    for num_data in numbers:
-        try:
-            # Insert number
-            await coll.insert_one({
-                "country_code": num_data['country_code'],
-                "number": num_data['number'],
-                "original_number": num_data['original_number'],
-                "range": num_data['range'],
-                "added_at": datetime.now(TIMEZONE)
-            })
-            
-            # Update statistics
-            if num_data['country_code'] not in country_stats:
-                country_stats[num_data['country_code']] = 0
-            country_stats[num_data['country_code']] += 1
-            inserted_count += 1
-            
-            # Get country info
-            country = pycountry.countries.get(alpha_2=num_data['country_code'].upper())
-            country_name = country.name if country else num_data['country_code']
-            flag = get_country_flag(num_data['country_code'])
-            
-            number_details.append(f"{flag} {num_data['number']} - {country_name}")
-        except Exception as e:
-            logging.error(f"Error inserting number: {e}")
-            continue
-
-    # Update countries collection
-    for country_code, count in country_stats.items():
-        country = pycountry.countries.get(alpha_2=country_code.upper())
-        display_name = country.name if country else country_code
-        
-        await countries_coll.update_one(
-            {"country_code": country_code},
-            {"$set": {
-                "country_code": country_code,
-                "display_name": display_name,
-                "last_updated": datetime.now(TIMEZONE),
-                "number_count": count
-            }},
-            upsert=True
-        )
-
-    uploaded_csv = None
-
-    # Prepare report
-    report_lines = [
-        "📊 Upload Report:",
-        f"✅ Successfully uploaded {inserted_count} numbers",
-        "",
-        "🌍 Countries detected:"
-    ]
-
-    # Add country statistics
-    for country_code, count in country_stats.items():
-        country_info = await countries_coll.find_one({"country_code": country_code})
-        country_name = country_info["display_name"] if country_info else country_code
-        flag = get_country_flag(country_code)
-        report_lines.append(f"{flag} {country_name}: {count} numbers")
-
-    # Add sample numbers (first 10)
-    report_lines.extend([
-        "",
-        "📋 Sample numbers:",
-        *number_details[:10]
-    ])
-
-    if len(number_details) > 10:
-        report_lines.append(f"\n... and {len(number_details) - 10} more numbers")
-
-    # Send report
-    await update.message.reply_text("\n".join(report_lines))
-
-    # Send complete list as file if many numbers
-    if len(number_details) > 10:
-        report_file = BytesIO()
-        report_file.write("\n".join([
-            "Number,Country,Country Code",
-            *[f"{num.split(' - ')[0]},{num.split(' - ')[1]},{num_data['country_code']}" 
-              for num, num_data in zip(number_details, numbers)]
-        ]).encode('utf-8'))
-        report_file.seek(0)
-        await update.message.reply_document(
-            document=report_file,
-            filename="number_upload_report.csv",
-            caption="📄 Complete number upload report"
-        )
+    # Set user state to ask for country name directly
+    user_states[user_id] = "waiting_for_country"
+    await update.message.reply_text(
+        "🌍 Please enter the country name for the numbers in the CSV file:\n"
+        "Examples: Sri Lanka Ws, Sri Lanka Tg, India, Saudi Arabia, USA, etc.\n"
+        "You can use custom names like 'India Ws' for WhatsApp numbers or 'India Tg' for Telegram numbers."
+    )
 
 async def process_all_numbers_with_country(update: Update, context: ContextTypes.DEFAULT_TYPE, country_name):
     """Process both manual numbers and CSV file with the provided country name"""
@@ -2187,6 +2091,9 @@ async def background_otp_cleanup_task(app):
     """Background task that runs every minute to check all numbers for OTPs and clean them"""
     logging.info("🔄 Background OTP cleanup task started - checking every minute")
     
+    # Wait for bot to fully initialize
+    await asyncio.sleep(10)
+    
     while True:
         try:
             await asyncio.sleep(60)  # Wait 1 minute
@@ -2343,10 +2250,13 @@ async def background_otp_cleanup_task(app):
 async def post_init(app):
     """Initialize background tasks after bot startup"""
     logging.info("🔄 Starting background cleanup task...")
-    asyncio.create_task(background_otp_cleanup_task(app))
+    try:
+        asyncio.create_task(background_otp_cleanup_task(app))
+    except Exception as e:
+        logging.error(f"Failed to start background task: {e}")
 
 def main():
-    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+    app = ApplicationBuilder().token(TOKEN).build()
 
     mongo_client = AsyncIOMotorClient(MONGO_URI)
     db = mongo_client[DB_NAME]
