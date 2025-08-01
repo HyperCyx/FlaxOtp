@@ -34,6 +34,10 @@ SMS_API_BASE_URL = "http://54.37.252.85"
 SMS_API_ENDPOINT = "/ints/agent/res/data_smscdr.php"
 SMS_API_COOKIE = "PHPSESSID=pq0oq4ckbcjnm7dbp6rna1dfdo"
 
+# OTP Monitoring Configuration
+OTP_CHECK_INTERVAL = 30  # Check for new OTPs every 30 seconds
+active_number_monitors = {}  # Store active monitors for each number
+
 TIMEZONE = pytz.timezone('Asia/Riyadh')
 logging.basicConfig(level=logging.INFO)
 uploaded_csv = None
@@ -289,10 +293,20 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         message += "\n\nSelect an option:"
         
-        await query.edit_message_text(
+        sent_message = await query.edit_message_text(
             message,
             reply_markup=number_options_keyboard(number, country_code),
             parse_mode=ParseMode.MARKDOWN
+        )
+        
+        # Start OTP monitoring for this number
+        await start_otp_monitoring(
+            number, 
+            sent_message.message_id, 
+            query.message.chat_id, 
+            country_code, 
+            country_name, 
+            context
         )
     else:
         keyboard = await countries_keyboard(db)
@@ -340,10 +354,20 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         message += "\n\nSelect an option:"
         
-        await query.edit_message_text(
+        sent_message = await query.edit_message_text(
             message,
             reply_markup=number_options_keyboard(number, country_code),
             parse_mode=ParseMode.MARKDOWN
+        )
+        
+        # Start OTP monitoring for this number
+        await start_otp_monitoring(
+            number, 
+            sent_message.message_id, 
+            query.message.chat_id, 
+            country_code, 
+            country_name, 
+            context
         )
     else:
         keyboard = await countries_keyboard(db)
@@ -383,6 +407,78 @@ async def get_latest_sms_for_number(phone_number, date_str=None):
             }
     
     return None
+
+async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, country_name, context):
+    """Start monitoring a phone number for new OTPs"""
+    if phone_number in active_number_monitors:
+        # Stop existing monitor
+        active_number_monitors[phone_number]['stop'] = True
+    
+    # Start new monitor
+    active_number_monitors[phone_number] = {
+        'stop': False,
+        'last_otp': None,
+        'last_check': None
+    }
+    
+    async def monitor_otp():
+        while not active_number_monitors[phone_number]['stop']:
+            try:
+                # Get latest SMS and OTP
+                sms_info = await get_latest_sms_for_number(phone_number)
+                
+                if sms_info and sms_info['otp']:
+                    current_otp = sms_info['otp']
+                    last_otp = active_number_monitors[phone_number]['last_otp']
+                    
+                    # Check if this is a new OTP
+                    if last_otp != current_otp:
+                        active_number_monitors[phone_number]['last_otp'] = current_otp
+                        active_number_monitors[phone_number]['last_check'] = sms_info['sms']['datetime']
+                        
+                        # Update the message with new OTP
+                        formatted_number = format_number_display(phone_number)
+                        detected_country = country_code  # Use the country code for flag
+                        flag = get_country_flag(detected_country)
+                        
+                        message = (
+                            f"{flag} Country: {country_name}\n"
+                            f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})\n"
+                            f"🔐 **OTP: `{current_otp}`**"
+                        )
+                        
+                        if sms_info['sms']['sender']:
+                            message += f"\n👤 Sender: {sms_info['sms']['sender']}"
+                        message += f"\n🕐 Time: {sms_info['sms']['datetime']}"
+                        message += "\n\nSelect an option:"
+                        
+                        try:
+                            await context.bot.edit_message_text(
+                                chat_id=chat_id,
+                                message_id=message_id,
+                                text=message,
+                                reply_markup=number_options_keyboard(phone_number, country_code),
+                                parse_mode=ParseMode.MARKDOWN
+                            )
+                            logging.info(f"Updated OTP for {phone_number}: {current_otp}")
+                        except Exception as e:
+                            logging.error(f"Failed to update message for {phone_number}: {e}")
+                
+                # Wait before next check
+                await asyncio.sleep(OTP_CHECK_INTERVAL)
+                
+            except Exception as e:
+                logging.error(f"Error in OTP monitoring for {phone_number}: {e}")
+                await asyncio.sleep(OTP_CHECK_INTERVAL)
+    
+    # Start the monitoring task
+    asyncio.create_task(monitor_otp())
+
+async def stop_otp_monitoring(phone_number):
+    """Stop monitoring a phone number for OTPs"""
+    if phone_number in active_number_monitors:
+        active_number_monitors[phone_number]['stop'] = True
+        del active_number_monitors[phone_number]
 
 async def check_sms_for_number(phone_number, date_str=None):
     """Check SMS for a specific phone number using the API"""
@@ -589,6 +685,11 @@ async def show_sms(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
+    # Stop any active OTP monitoring
+    for phone_number in list(active_number_monitors.keys()):
+        await stop_otp_monitoring(phone_number)
+    
     db = context.bot_data["db"]
     keyboard = await countries_keyboard(db)
     await query.edit_message_text(
