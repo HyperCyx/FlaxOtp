@@ -1135,88 +1135,136 @@ async def delete_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Deleted {result.deleted_count} numbers for {flag} {display_name} (`{country_code}`)."
     )
 
-async def delete_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Delete a specific phone number"""
+async def check_api_connection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check SMS API connection status"""
     user_id = update.effective_user.id
-    logging.info(f"Delete number command called by user {user_id}")
+    logging.info(f"Check API connection command called by user {user_id}")
     
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to delete numbers.")
+        await update.message.reply_text("🚫 You are not authorized to check API connection.")
         return
 
-    args = context.args
-    if not args:
-        # Show some example numbers from database
-        db = context.bot_data["db"]
-        coll = db[COLLECTION_NAME]
-        
-        # Get a few sample numbers
-        sample_numbers = await coll.find({}).limit(5).to_list(length=5)
-        
-        if sample_numbers:
-            message_lines = ["📱 Available numbers to delete (examples):"]
-            for num_data in sample_numbers:
-                flag = get_country_flag(num_data.get("detected_country", num_data["country_code"]))
-                formatted_num = format_number_display(num_data["number"])
-                country_code = num_data["country_code"]
-                message_lines.append(f"{flag} {formatted_num} ({country_code})")
-            
-            message_lines.append("\nUsage: /deletenum <phone_number>")
-            message_lines.append("Example: /deletenum +966501234567")
-            message_lines.append("Note: You can use with or without + prefix")
-        else:
-            message_lines = [
-                "📭 No numbers found in database.",
-                "Usage: /deletenum <phone_number>",
-                "Example: /deletenum +966501234567"
-            ]
-        
-        await update.message.reply_text("\n".join(message_lines))
-        return
+    await update.message.reply_text("🔍 Checking SMS API connection...")
 
-    phone_number = args[0]
-    cleaned_number = clean_number(phone_number)
-    
-    db = context.bot_data["db"]
-    coll = db[COLLECTION_NAME]
-
-    # Try to find the number with different formats
-    result = None
-    
-    # Try exact match first
-    result = await coll.find_one_and_delete({"number": cleaned_number})
-    
-    # If not found, try with + prefix
-    if not result and not cleaned_number.startswith("+"):
-        result = await coll.find_one_and_delete({"number": f"+{cleaned_number}"})
-    
-    # If not found, try without + prefix
-    if not result and cleaned_number.startswith("+"):
-        result = await coll.find_one_and_delete({"number": cleaned_number[1:]})
-    
-    # If still not found, try original_number field
-    if not result:
-        result = await coll.find_one_and_delete({"original_number": phone_number})
-    
-    if result:
-        country_code = result.get("country_code", "unknown")
-        flag = get_country_flag(result.get("detected_country", country_code))
-        formatted_number = format_number_display(result["number"])
+    try:
+        # Test the SMS API connection
+        url = f"{SMS_API_BASE_URL}{SMS_API_ENDPOINT}"
         
-        await update.message.reply_text(
-            f"✅ Deleted number: {flag} {formatted_number} (Country: {country_code})"
-        )
+        # Use minimal params for connection test
+        from datetime import datetime, timedelta
+        import pytz
+        timezone = pytz.timezone(TIMEZONE_NAME)
+        now = datetime.now(timezone)
+        yesterday = now - timedelta(hours=24)
+        date_str = yesterday.strftime("%Y-%m-%d")
         
-        # Update country count
-        countries_coll = db[COUNTRIES_COLLECTION]
-        await countries_coll.update_one(
-            {"country_code": country_code},
-            {"$inc": {"number_count": -1}}
-        )
-    else:
+        params = {
+            'fdate1': f"{date_str} 00:00:00",
+            'fdate2': f"{now.strftime('%Y-%m-%d %H:%M:%S')}",
+            'fnum': '000000000',  # Dummy number for connection test
+            'iDisplayLength': '1',  # Minimal data
+            'sSortDir_0': 'desc',
+            '_': str(int(datetime.now().timestamp() * 1000))
+        }
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36',
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': f'{SMS_API_BASE_URL}/ints/agent/SMSCDRReports',
+            'Accept-Encoding': 'gzip, deflate',
+            'Accept-Language': 'en-US,en;q=0.9,ks-IN;q=0.8,ks;q=0.7',
+            'Cookie': SMS_API_COOKIE
+        }
+        
+        import time
+        start_time = time.time()
+        
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(url, params=params, headers=headers) as response:
+                response_time = round((time.time() - start_time) * 1000, 2)
+                
+                status_emoji = "✅" if response.status == 200 else "❌"
+                status_text = "Connected" if response.status == 200 else f"Error {response.status}"
+                
+                # Check response content
+                response_text = await response.text()
+                content_type = response.headers.get('content-type', 'unknown')
+                
+                # Detect common issues
+                issues = []
+                if 'login' in response_text.lower():
+                    issues.append("❌ Session expired - redirected to login")
+                elif 'direct script access not allowed' in response_text.lower():
+                    issues.append("❌ Direct script access blocked")
+                elif response.status != 200:
+                    issues.append(f"❌ HTTP Error: {response.status}")
+                elif 'application/json' not in content_type and response_text.strip().startswith('{'):
+                    issues.append("⚠️ JSON response with wrong content-type")
+                elif not response_text.strip().startswith('{'):
+                    issues.append("❌ Non-JSON response received")
+                
+                # Try to parse JSON
+                json_valid = False
+                try:
+                    import json
+                    data = json.loads(response_text)
+                    json_valid = True
+                    record_count = data.get('iTotalRecords', 'unknown')
+                except:
+                    record_count = 'invalid'
+                
+                # Build status message
+                message_lines = [
+                    f"🌐 **SMS API Connection Status**",
+                    f"",
+                    f"{status_emoji} **Status**: {status_text}",
+                    f"⏱️ **Response Time**: {response_time}ms",
+                    f"📡 **Endpoint**: {SMS_API_BASE_URL}",
+                    f"🔧 **Content-Type**: {content_type}",
+                    f"📊 **JSON Valid**: {'✅ Yes' if json_valid else '❌ No'}",
+                    f"📈 **Test Query Records**: {record_count}",
+                    f"🍪 **Cookie**: {SMS_API_COOKIE[:20]}...{SMS_API_COOKIE[-10:]}",
+                ]
+                
+                if issues:
+                    message_lines.extend([
+                        f"",
+                        f"⚠️ **Issues Detected**:"
+                    ])
+                    message_lines.extend(issues)
+                else:
+                    message_lines.extend([
+                        f"",
+                        f"✅ **All checks passed!**",
+                        f"🎯 **API is ready for OTP detection**"
+                    ])
+                
+                message_lines.extend([
+                    f"",
+                    f"_Test performed at {now.strftime('%Y-%m-%d %H:%M:%S')}_"
+                ])
+                
+                await update.message.reply_text(
+                    "\n".join(message_lines),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                
+    except asyncio.TimeoutError:
         await update.message.reply_text(
-            f"❌ Number '{phone_number}' not found in database.\n"
-            "Try using the exact format as stored in the database."
+            "❌ **SMS API Connection Failed**\n\n"
+            "⏱️ **Error**: Connection timeout (>10 seconds)\n"
+            "🔧 **Suggestion**: Check SMS API server status\n\n"
+            f"📡 **Endpoint**: {SMS_API_BASE_URL}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ **SMS API Connection Failed**\n\n"
+            f"🚫 **Error**: {str(e)}\n"
+            f"🔧 **Suggestion**: Check network connection and API settings\n\n"
+            f"📡 **Endpoint**: {SMS_API_BASE_URL}",
+            parse_mode=ParseMode.MARKDOWN
         )
 
 async def delete_all_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2269,7 +2317,7 @@ def main():
     app.add_handler(CommandHandler("test", test_command))
     app.add_handler(CommandHandler("add", add_command))
     app.add_handler(CommandHandler("delete", delete_country))
-    app.add_handler(CommandHandler("deletenum", delete_number))
+    app.add_handler(CommandHandler("checkapi", check_api_connection))
     app.add_handler(CommandHandler("deleteall", delete_all_numbers))
     app.add_handler(CommandHandler("stats", show_stats))
     app.add_handler(CommandHandler("list", list_numbers))
