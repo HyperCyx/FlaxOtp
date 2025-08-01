@@ -712,6 +712,67 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
         MORNING_CALL_TIMEOUT = 120
         check_count = 0
         
+        # Immediate check for existing OTP
+        logging.info(f"🔍 Immediate OTP check for {phone_number}")
+        immediate_sms_info = await get_latest_sms_for_number(phone_number)
+        if immediate_sms_info and immediate_sms_info['otp']:
+            logging.info(f"🎯 IMMEDIATE OTP FOUND for {phone_number}: {immediate_sms_info['otp']}")
+            # Process this OTP immediately
+            current_otp = immediate_sms_info['otp']
+            active_number_monitors[session_id]['last_otp'] = current_otp
+            
+            # Update the message with new OTP
+            formatted_number = format_number_display(phone_number)
+            flag = get_country_flag(country_code)
+            
+            message = (
+                f"{flag} Country: {country_name}\n"
+                f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})\n"
+                f"🔐 {immediate_sms_info['sms']['sender']} : {current_otp}\n\n"
+                f"Select an option:"
+            )
+            
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=message,
+                    reply_markup=number_options_keyboard(phone_number, country_code),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                logging.info(f"✅ Immediate OTP update successful for {phone_number}: {current_otp}")
+                
+                # Delete the number permanently
+                db = context.bot_data["db"]
+                coll = db[COLLECTION_NAME]
+                countries_coll = db[COUNTRIES_COLLECTION]
+                
+                delete_result = await coll.delete_one({"number": phone_number})
+                if delete_result.deleted_count > 0:
+                    logging.info(f"🗑️ Number {phone_number} permanently deleted after immediate OTP")
+                    
+                    # Update country count
+                    await countries_coll.update_one(
+                        {"country_code": country_code},
+                        {"$inc": {"number_count": -1}}
+                    )
+                    
+                    # Stop this monitoring session
+                    await stop_otp_monitoring_session(session_id)
+                    
+                    # Notify user
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"✅ Number {formatted_number} has been permanently deleted after receiving OTP: {current_otp}\n\n"
+                             f"🔄 Click 'Change' to get another number from the same country, or select a different country."
+                    )
+                    return  # Exit monitoring since OTP was found
+                    
+            except Exception as e:
+                logging.error(f"Failed to update message for {phone_number} (immediate): {e}")
+        else:
+            logging.info(f"❌ No immediate OTP found for {phone_number}, starting monitoring loop")
+        
         while not active_number_monitors[session_id]['stop']:
             try:
                 check_count += 1
@@ -724,8 +785,11 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                     current_otp = sms_info['otp']
                     last_otp = active_number_monitors[session_id]['last_otp']
                     
-                    # Check if this is a new OTP
-                    if last_otp != current_otp:
+                    logging.info(f"🔍 OTP Check for {phone_number}: Last OTP = {last_otp}, Current OTP = {current_otp}")
+                    
+                    # Check if this is a new OTP (including first OTP detection)
+                    if last_otp != current_otp or last_otp is None:
+                        logging.info(f"🎯 NEW OTP DETECTED for {phone_number}: {current_otp}")
                         active_number_monitors[session_id]['last_otp'] = current_otp
                         
                         # Update the message with new OTP
