@@ -1,6 +1,6 @@
 # === TELEGRAM BOT DEPENDENCIES ===
-python-telegram-bot==22.3
-telegram==0.0.1
+python-telegram-bot==20.8
+# telegram==0.0.1  # Not needed with python-telegram-bot
 
 # === DATABASE DEPENDENCIES ===
 motor==3.7.1
