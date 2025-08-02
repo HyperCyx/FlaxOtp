@@ -1366,9 +1366,9 @@ async def show_sms(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def refresh_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Refresh user status via callback"""
+    """Refresh user status via callback and automatically check for OTPs"""
     query = update.callback_query
-    await query.answer()
+    await query.answer("🔍 Refreshing and checking for OTPs...", show_alert=True)
     user_id = query.from_user.id
     
     if user_id not in user_monitoring_sessions or not user_monitoring_sessions[user_id]:
@@ -1377,6 +1377,7 @@ async def refresh_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     status_text = "📊 Your Current Status:\n\n"
     buttons = []
+    otp_found = False
     
     for session_id, session_data in user_monitoring_sessions[user_id].items():
         phone_number = session_data['phone_number']
@@ -1391,16 +1392,37 @@ async def refresh_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_text += f"📱 {format_number_display(phone_number)}\n"
         status_text += f"   🌍 {country_name}\n"
         status_text += f"   ⏰ Remaining: {int(remaining)} seconds\n"
-        status_text += f"   🕐 Started: {start_time.strftime('%H:%M:%S')}\n\n"
+        status_text += f"   🕐 Started: {start_time.strftime('%H:%M:%S')}\n"
         
-        # Add SMS button for each number
-        buttons.append([InlineKeyboardButton(f"📩 Get SMS for {format_number_display(phone_number)}", callback_data=f"sms_{phone_number}")])
+        # Check for OTP automatically
+        try:
+            sms_info = await get_latest_sms_for_number(phone_number)
+            if sms_info and sms_info['otp']:
+                otp_found = True
+                status_text += f"   🔐 OTP: {sms_info['otp']} (from {sms_info['sms']['sender']})\n"
+            else:
+                status_text += f"   📭 No OTP received yet\n"
+        except Exception as e:
+            logging.error(f"Error checking SMS for {phone_number}: {e}")
+            status_text += f"   ❌ SMS check failed\n"
+        
+        status_text += "\n"
+        
+        # Add manual SMS check button for each number
+        buttons.append([InlineKeyboardButton(f"📩 Manual SMS Check for {format_number_display(phone_number)}", callback_data=f"sms_{phone_number}")])
     
     # Add refresh button
     buttons.append([InlineKeyboardButton("🔄 Refresh Status", callback_data="refresh_status")])
     buttons.append([InlineKeyboardButton("🌍 Get New Number", callback_data="menu")])
     
     keyboard = InlineKeyboardMarkup(buttons)
+    
+    # Update message with results
+    if otp_found:
+        status_text = "✅ OTP Found!\n\n" + status_text
+    else:
+        status_text = "🔍 Status Updated\n\n" + status_text
+    
     await query.edit_message_text(status_text, reply_markup=keyboard)
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1923,15 +1945,19 @@ async def show_my_morning_calls(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text(status_text)
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show user's current status with SMS functionality"""
+    """Show user's current status and automatically check for OTPs"""
     user_id = update.effective_user.id
     
     if user_id not in user_monitoring_sessions or not user_monitoring_sessions[user_id]:
         await update.message.reply_text("📱 You have no active sessions.\n\nUse /countries to get a phone number.")
         return
     
+    # Send initial loading message
+    loading_msg = await update.message.reply_text("🔍 Checking your numbers for OTPs...")
+    
     status_text = "📊 Your Current Status:\n\n"
     buttons = []
+    otp_found = False
     
     for session_id, session_data in user_monitoring_sessions[user_id].items():
         phone_number = session_data['phone_number']
@@ -1946,17 +1972,38 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_text += f"📱 {format_number_display(phone_number)}\n"
         status_text += f"   🌍 {country_name}\n"
         status_text += f"   ⏰ Remaining: {int(remaining)} seconds\n"
-        status_text += f"   🕐 Started: {start_time.strftime('%H:%M:%S')}\n\n"
+        status_text += f"   🕐 Started: {start_time.strftime('%H:%M:%S')}\n"
         
-        # Add SMS button for each number
-        buttons.append([InlineKeyboardButton(f"📩 Get SMS for {format_number_display(phone_number)}", callback_data=f"sms_{phone_number}")])
+        # Check for OTP automatically
+        try:
+            sms_info = await get_latest_sms_for_number(phone_number)
+            if sms_info and sms_info['otp']:
+                otp_found = True
+                status_text += f"   🔐 OTP: {sms_info['otp']} (from {sms_info['sms']['sender']})\n"
+            else:
+                status_text += f"   📭 No OTP received yet\n"
+        except Exception as e:
+            logging.error(f"Error checking SMS for {phone_number}: {e}")
+            status_text += f"   ❌ SMS check failed\n"
+        
+        status_text += "\n"
+        
+        # Add manual SMS check button for each number
+        buttons.append([InlineKeyboardButton(f"📩 Manual SMS Check for {format_number_display(phone_number)}", callback_data=f"sms_{phone_number}")])
     
     # Add refresh button
     buttons.append([InlineKeyboardButton("🔄 Refresh Status", callback_data="refresh_status")])
     buttons.append([InlineKeyboardButton("🌍 Get New Number", callback_data="menu")])
     
     keyboard = InlineKeyboardMarkup(buttons)
-    await update.message.reply_text(status_text, reply_markup=keyboard)
+    
+    # Update the loading message with results
+    if otp_found:
+        status_text = "✅ OTP Found!\n\n" + status_text
+    else:
+        status_text = "🔍 Status Updated\n\n" + status_text
+    
+    await loading_msg.edit_text(status_text, reply_markup=keyboard)
 
 async def update_sms_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Update SMS API session cookie"""
