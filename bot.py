@@ -1134,6 +1134,23 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                     except Exception as e:
                         logging.error(f"Failed to send morning call timeout message for {phone_number}: {e}")
                     
+                    # Notify admins about monitoring session expiration
+                    for admin_id in ADMIN_IDS:
+                        try:
+                            await context.bot.send_message(
+                                chat_id=admin_id,
+                                text=f"⏰ **OTP Monitoring Expired**\n\n"
+                                     f"📞 Number: {format_number_display(phone_number)}\n"
+                                     f"👤 User ID: {monitoring_user_id}\n"
+                                     f"⏱️ Duration: 2 minutes\n"
+                                     f"🔄 Number returned to pool\n\n"
+                                     f"ℹ️ _Expired at {current_time.strftime('%H:%M:%S')}_",
+                                parse_mode=ParseMode.MARKDOWN
+                            )
+                            logging.info(f"📢 OTP monitoring expiration notification sent to admin {admin_id}")
+                        except Exception as admin_notify_error:
+                            logging.error(f"Failed to notify admin {admin_id} about monitoring expiration: {admin_notify_error}")
+                    
                     break
                 
                 # Wait 5 seconds before next check
