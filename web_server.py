@@ -4,6 +4,10 @@ import logging
 import threading
 import time
 from flask import Flask, jsonify
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Import the bot's main function
 from bot import main as bot_main

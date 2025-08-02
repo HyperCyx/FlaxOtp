@@ -8,6 +8,30 @@ This guide will help you deploy your Telegram bot to Koyeb using Docker.
 - Your code pushed to a GitHub repository
 - Docker installed locally (for testing)
 
+## Local Development
+
+### Setting up Environment Variables
+
+1. **Copy the example file:**
+   ```bash
+   cp .env.example .env
+   ```
+
+2. **Edit the .env file** with your actual configuration values:
+   ```bash
+   nano .env
+   ```
+
+3. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Run the bot locally:**
+   ```bash
+   python web_server.py
+   ```
+
 ## Quick Deployment
 
 ### Option 1: Using the Deployment Script
@@ -38,14 +62,24 @@ This guide will help you deploy your Telegram bot to Koyeb using Docker.
 
 ## Configuration
 
-### Environment Variables (Optional)
+### Environment Variables
 
-If you need to override configuration values, you can set these environment variables in Koyeb:
+The application uses a `.env` file for configuration. For production deployment on Koyeb, you should set these environment variables in the Koyeb dashboard:
 
+#### Required Variables:
 - `TOKEN`: Your Telegram bot token
 - `MONGO_URI`: MongoDB connection string
 - `SMS_API_COOKIE`: SMS API session cookie
 - `ADMIN_IDS`: Comma-separated list of admin user IDs
+
+#### Optional Variables:
+- `DB_NAME`: Database name (default: TelegramBotB)
+- `COLLECTION_NAME`: Collection name (default: numbers)
+- `OTP_CHECK_INTERVAL`: OTP check interval in seconds (default: 5)
+- `OTP_TIMEOUT`: OTP timeout in seconds (default: 300)
+- `TIMEZONE_NAME`: Timezone (default: Asia/Riyadh)
+- `LOGGING_LEVEL`: Logging level (default: INFO)
+- `PORT`: Web server port (default: 8080)
 
 ### Setting Environment Variables in Koyeb
 

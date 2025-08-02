@@ -22,6 +22,10 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import pytz
 import pycountry
 import aiohttp
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Import all configurations from config.py
 from config import *
