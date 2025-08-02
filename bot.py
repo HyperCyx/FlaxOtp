@@ -45,6 +45,17 @@ current_user_numbers = {}  # Track current number for each user
 user_monitoring_sessions = {}  # Track multiple monitoring sessions per user
 active_number_monitors = {}  # Store active monitors for each number
 
+# PERFORMANCE OPTIMIZATION: Cache for country data to avoid repeated DB queries
+countries_cache = None
+countries_cache_time = None
+
+def clear_countries_cache():
+    """Clear the countries cache to force refresh"""
+    global countries_cache, countries_cache_time
+    countries_cache = None
+    countries_cache_time = None
+    logging.info("Countries cache cleared")
+
 # === SESSION MANAGEMENT FUNCTIONS ===
 def reload_config_session():
     """Reload SMS API session from config file"""
@@ -344,13 +355,35 @@ def number_keyboard():
     ])
 
 async def countries_keyboard(db):
-    countries_coll = db[COUNTRIES_COLLECTION]
-    countries = await countries_coll.distinct("country_code")
+    global countries_cache, countries_cache_time
+    from datetime import datetime, timedelta
+    
+    # PERFORMANCE OPTIMIZATION: Use cache if available and fresh (5 minutes)
+    now = datetime.now()
+    if countries_cache and countries_cache_time and (now - countries_cache_time) < timedelta(minutes=5):
+        logging.info("Using cached countries data")
+        countries_data = countries_cache
+    else:
+        logging.info("Refreshing countries cache")
+        countries_coll = db[COUNTRIES_COLLECTION]
+        
+        # PERFORMANCE OPTIMIZATION: Get all country data in a single query instead of individual queries
+        countries_data = await countries_coll.find({}).to_list(length=None)
+        
+        # Sort by display_name for better user experience
+        countries_data.sort(key=lambda x: x.get("display_name", x.get("country_code", "")))
+        
+        # Cache the result
+        countries_cache = countries_data
+        countries_cache_time = now
     
     buttons = []
-    for country_code in countries:
-        country_info = await countries_coll.find_one({"country_code": country_code})
-        if country_info and "display_name" in country_info:
+    for country_info in countries_data:
+        country_code = country_info.get("country_code")
+        if not country_code:
+            continue
+            
+        if "display_name" in country_info:
             display_name = country_info["display_name"]
             # Use detected country for flag if available
             detected_country = country_info.get("detected_country", country_code)
@@ -565,20 +598,56 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     coll = db[COLLECTION_NAME]
     countries_coll = db[COUNTRIES_COLLECTION]
 
-    country_info = await countries_coll.find_one({"country_code": country_code})
-    country_name = country_info["display_name"] if country_info else country_code
-
-    # Get a random number from the available numbers for this country (number stays in database for reuse)
-    pipeline = [
-        {"$match": {"country_code": country_code}},
-        {"$sample": {"size": 1}}
-    ]
-    results = await coll.aggregate(pipeline).to_list(length=1)
-    result = results[0] if results else None
+    # PERFORMANCE OPTIMIZATION: Try simple approach first for speed
+    try:
+        # Fast path: Simple random selection without lookup
+        simple_pipeline = [
+            {"$match": {"country_code": country_code}},
+            {"$sample": {"size": 1}}
+        ]
+        results = await coll.aggregate(simple_pipeline).to_list(length=1)
+        result = results[0] if results else None
+        
+        if result:
+            # Get country name from cache or quick lookup
+            country_name = country_code  # Default fallback
+            global countries_cache
+            if countries_cache:
+                for country_info in countries_cache:
+                    if country_info.get("country_code") == country_code:
+                        country_name = country_info.get("display_name", country_code)
+                        break
+            else:
+                # Quick individual lookup if cache not available
+                country_info = await countries_coll.find_one({"country_code": country_code}, {"display_name": 1})
+                if country_info:
+                    country_name = country_info.get("display_name", country_code)
+        
+    except Exception as e:
+        logging.warning(f"Fast path failed, using full pipeline: {e}")
+        
+        # Fallback: Full aggregation pipeline with lookup
+        pipeline = [
+            {"$match": {"country_code": country_code}},
+            {"$sample": {"size": 1}},
+            {"$lookup": {
+                "from": COUNTRIES_COLLECTION,
+                "localField": "country_code", 
+                "foreignField": "country_code",
+                "as": "country_info"
+            }},
+            {"$addFields": {
+                "country_name": {"$ifNull": [{"$arrayElemAt": ["$country_info.display_name", 0]}, country_code]}
+            }}
+        ]
+        results = await coll.aggregate(pipeline).to_list(length=1)
+        result = results[0] if results else None
+        country_name = result.get("country_name", country_code) if result else country_code
     
     if result and "number" in result:
         number = result["number"]
         formatted_number = format_number_display(number)
+        # country_name is already set above in the fast path or fallback
         
         # Track current number for this user
         user_id = query.from_user.id
@@ -589,22 +658,13 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         detected_country = result.get("detected_country", country_code)
         flag = get_country_flag(detected_country)
         
-        # Check for latest SMS and OTP
-        sms_info = await get_latest_sms_for_number(number)
-        
+        # PERFORMANCE OPTIMIZATION: Show number immediately, then check SMS in background
         message = (
             f"{flag} Country: {country_name}\n"
-            f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})"
+            f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})\n\n"
+            f"🔍 Checking for existing SMS...\n\n"
+            f"Select an option:"
         )
-        
-        # Add OTP if found
-        if sms_info and sms_info['otp']:
-            if sms_info['sms']['sender']:
-                message += f"\n🔐 {sms_info['sms']['sender']} : {sms_info['otp']}"
-            else:
-                message += f"\n🔐 OTP : {sms_info['otp']}"
-        
-        message += "\n\nSelect an option:"
         
         sent_message = await query.edit_message_text(
             message,
@@ -612,7 +672,7 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         
-        # Start OTP monitoring for this number
+        # Start OTP monitoring for this number (this will update the message with SMS if found)
         await start_otp_monitoring(
             number, 
             sent_message.message_id, 
@@ -623,6 +683,10 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query.from_user.id
         )
     else:
+        # Get country name for error message
+        country_info = await countries_coll.find_one({"country_code": country_code})
+        country_name = country_info["display_name"] if country_info else country_code
+        
         keyboard = await countries_keyboard(db)
         await query.edit_message_text(
             f"⚠️ No numbers available for {country_name} right now. Please try another country.",
@@ -772,15 +836,29 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 async def get_latest_sms_for_number(phone_number, date_str=None):
-    """Get the latest SMS for a phone number and extract OTP"""
+    """Get the latest SMS for a phone number and extract OTP - OPTIMIZED"""
     logging.info(f"Getting latest SMS for {phone_number}")
-    sms_data = await check_sms_for_number(phone_number, date_str)
+    
+    # PERFORMANCE OPTIMIZATION: Use shorter timeout for initial checks
+    import asyncio
+    try:
+        sms_data = await asyncio.wait_for(
+            check_sms_for_number(phone_number, date_str), 
+            timeout=15.0  # 15 second timeout instead of 30
+        )
+    except asyncio.TimeoutError:
+        logging.warning(f"SMS check timed out for {phone_number} - returning None")
+        return None
     
     if sms_data and 'aaData' in sms_data and sms_data['aaData']:
         logging.info(f"SMS data found for {phone_number}, processing {len(sms_data['aaData'])} rows")
+        
+        # PERFORMANCE OPTIMIZATION: Only process first few rows for initial check
+        rows_to_check = min(10, len(sms_data['aaData']))  # Limit to first 10 rows
+        
         # Filter out summary rows and get actual SMS messages
         sms_messages = []
-        for row in sms_data['aaData']:
+        for i, row in enumerate(sms_data['aaData'][:rows_to_check]):
             if isinstance(row, list) and len(row) >= 6:
                 # Check if this is a real SMS message (not a summary row)
                 first_item = str(row[0])
@@ -792,6 +870,16 @@ async def get_latest_sms_for_number(phone_number, date_str=None):
                         'sender': row[3] if len(row) > 3 else 'Unknown',
                         'message': row[5] if len(row) > 5 else 'No message content'
                     })
+                    
+                    # PERFORMANCE OPTIMIZATION: Stop after finding first valid SMS with OTP
+                    test_otp = extract_otp_from_message(sms_messages[-1]['message'])
+                    if test_otp:
+                        logging.info(f"🚀 FAST OTP DETECTED for {phone_number}: {test_otp}")
+                        return {
+                            'sms': sms_messages[-1],
+                            'otp': test_otp,
+                            'total_messages': len(sms_messages)
+                        }
         
         logging.info(f"Found {len(sms_messages)} valid SMS messages for {phone_number}")
         
@@ -1923,6 +2011,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 1️⃣4️⃣ `/checkapi` - Test SMS API connection status
 1️⃣5️⃣ `/updatesms PHPSESSID=abc123def456` - Update SMS session cookie
 1️⃣6️⃣ `/reloadsession` - Reload session from config.py file
+1️⃣7️⃣ `/clearcache` - Clear countries cache for performance
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📋 **QUICK EXAMPLES:**
@@ -1947,6 +2036,16 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
     
     await update.message.reply_text(admin_commands, parse_mode=ParseMode.MARKDOWN)
+
+async def clear_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear countries cache to force refresh"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
+        return
+    
+    clear_countries_cache()
+    await update.message.reply_text("✅ Countries cache cleared. Next country list will be refreshed from database.")
 
 async def reload_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reload SMS API session from config file"""
@@ -2738,6 +2837,7 @@ def main():
     app.add_handler(CommandHandler("morningcalls", show_my_morning_calls))
     app.add_handler(CommandHandler("updatesms", update_sms_session))
     app.add_handler(CommandHandler("admin", admin_help))
+    app.add_handler(CommandHandler("clearcache", clear_cache))
     app.add_handler(CommandHandler("reloadsession", reload_session))
     app.add_handler(CallbackQueryHandler(check_join, pattern="check_join"))
     app.add_handler(CallbackQueryHandler(request_number, pattern="request_number"))
