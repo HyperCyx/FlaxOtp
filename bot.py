@@ -1365,6 +1365,44 @@ async def show_sms(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+async def refresh_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Refresh user status via callback"""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    if user_id not in user_monitoring_sessions or not user_monitoring_sessions[user_id]:
+        await query.edit_message_text("📱 You have no active sessions.\n\nUse /countries to get a phone number.")
+        return
+    
+    status_text = "📊 Your Current Status:\n\n"
+    buttons = []
+    
+    for session_id, session_data in user_monitoring_sessions[user_id].items():
+        phone_number = session_data['phone_number']
+        country_name = session_data['country_name']
+        start_time = session_data['start_time']
+        
+        # Calculate remaining time (2 minutes = 120 seconds)
+        current_time = datetime.now(TIMEZONE)
+        elapsed = (current_time - start_time).total_seconds()
+        remaining = max(0, 120 - elapsed)
+        
+        status_text += f"📱 {format_number_display(phone_number)}\n"
+        status_text += f"   🌍 {country_name}\n"
+        status_text += f"   ⏰ Remaining: {int(remaining)} seconds\n"
+        status_text += f"   🕐 Started: {start_time.strftime('%H:%M:%S')}\n\n"
+        
+        # Add SMS button for each number
+        buttons.append([InlineKeyboardButton(f"📩 Get SMS for {format_number_display(phone_number)}", callback_data=f"sms_{phone_number}")])
+    
+    # Add refresh button
+    buttons.append([InlineKeyboardButton("🔄 Refresh Status", callback_data="refresh_status")])
+    buttons.append([InlineKeyboardButton("🌍 Get New Number", callback_data="menu")])
+    
+    keyboard = InlineKeyboardMarkup(buttons)
+    await query.edit_message_text(status_text, reply_markup=keyboard)
+
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1883,6 +1921,42 @@ async def show_my_morning_calls(update: Update, context: ContextTypes.DEFAULT_TY
         status_text += f"   🕐 Started: {start_time.strftime('%H:%M:%S')}\n\n"
     
     await update.message.reply_text(status_text)
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show user's current status with SMS functionality"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_monitoring_sessions or not user_monitoring_sessions[user_id]:
+        await update.message.reply_text("📱 You have no active sessions.\n\nUse /countries to get a phone number.")
+        return
+    
+    status_text = "📊 Your Current Status:\n\n"
+    buttons = []
+    
+    for session_id, session_data in user_monitoring_sessions[user_id].items():
+        phone_number = session_data['phone_number']
+        country_name = session_data['country_name']
+        start_time = session_data['start_time']
+        
+        # Calculate remaining time (2 minutes = 120 seconds)
+        current_time = datetime.now(TIMEZONE)
+        elapsed = (current_time - start_time).total_seconds()
+        remaining = max(0, 120 - elapsed)
+        
+        status_text += f"📱 {format_number_display(phone_number)}\n"
+        status_text += f"   🌍 {country_name}\n"
+        status_text += f"   ⏰ Remaining: {int(remaining)} seconds\n"
+        status_text += f"   🕐 Started: {start_time.strftime('%H:%M:%S')}\n\n"
+        
+        # Add SMS button for each number
+        buttons.append([InlineKeyboardButton(f"📩 Get SMS for {format_number_display(phone_number)}", callback_data=f"sms_{phone_number}")])
+    
+    # Add refresh button
+    buttons.append([InlineKeyboardButton("🔄 Refresh Status", callback_data="refresh_status")])
+    buttons.append([InlineKeyboardButton("🌍 Get New Number", callback_data="menu")])
+    
+    keyboard = InlineKeyboardMarkup(buttons)
+    await update.message.reply_text(status_text, reply_markup=keyboard)
 
 async def update_sms_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Update SMS API session cookie"""
@@ -2859,6 +2933,7 @@ async def main():
     app.add_handler(CommandHandler("forceotp", force_otp_check))
     app.add_handler(CommandHandler("monitoring", check_monitoring_status))
     app.add_handler(CommandHandler("countries", countries))
+    app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("countrynumbers", check_country_numbers))
     app.add_handler(CommandHandler("resetnumber", reset_current_number))
     app.add_handler(CommandHandler("morningcalls", show_my_morning_calls))
@@ -2871,6 +2946,7 @@ async def main():
     app.add_handler(CallbackQueryHandler(send_number, pattern="^country_"))
     # app.add_handler(CallbackQueryHandler(change_number, pattern="^change_"))  # TEMPORARILY SUSPENDED
     app.add_handler(CallbackQueryHandler(show_sms, pattern="^sms_"))
+    app.add_handler(CallbackQueryHandler(refresh_status, pattern="^refresh_status$"))
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(MessageHandler(filters.Document.FileExtension("csv") & filters.User(ADMIN_IDS), upload_csv))
     app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), handle_text_message))
