@@ -402,6 +402,7 @@ async def countries_keyboard(db):
 
 def number_options_keyboard(number, country_code):
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Copy Number", callback_data=f"copy_number_{number}")],
         # [InlineKeyboardButton("🔄 Change", callback_data=f"change_{country_code}")],  # TEMPORARILY SUSPENDED
         [InlineKeyboardButton("📩 Show SMS", callback_data=f"sms_{number}")],
         [InlineKeyboardButton("📋 Menu", callback_data="menu")]
@@ -659,17 +660,19 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         flag = get_country_flag(detected_country)
         
         # PERFORMANCE OPTIMIZATION: Show number immediately, then check SMS in background
+        escaped_country = escape_markdown_v2(country_name)
+        
         message = (
-            f"{flag} Country: {country_name}\n"
-            f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})\n\n"
-            f"🔍 Checking for existing SMS...\n\n"
-            f"Select an option:"
+            f"{flag} *Country:* {escaped_country}\n"
+            f"📞 *Number:* `{escape_markdown_v2(formatted_number)}`\n\n"
+            f"🔍 *Checking for existing SMS\\.\\.\\.*\n\n"
+            f"*Select an option:*"
         )
         
         sent_message = await query.edit_message_text(
             message,
             reply_markup=number_options_keyboard(number, country_code),
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN_V2
         )
         
         # Start OTP monitoring for this number (this will update the message with SMS if found)
@@ -785,24 +788,29 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Check for latest SMS and OTP
         sms_info = await get_latest_sms_for_number(number)
         
+        escaped_country = escape_markdown_v2(country_name)
+        escaped_number = escape_markdown_v2(formatted_number)
+        
         message = (
-            f"{flag} Country: {country_name}\n"
-            f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})"
+            f"{flag} *Country:* {escaped_country}\n"
+            f"📞 *Number:* `{escaped_number}`"
         )
         
         # Add OTP if found
         if sms_info and sms_info['otp']:
+            escaped_otp = escape_markdown_v2(sms_info['otp'])
             if sms_info['sms']['sender']:
-                message += f"\n🔐 {sms_info['sms']['sender']} : {sms_info['otp']}"
+                escaped_sender = escape_markdown_v2(sms_info['sms']['sender'])
+                message += f"\n🔐 *{escaped_sender}* : `{escaped_otp}`"
             else:
-                message += f"\n🔐 OTP : {sms_info['otp']}"
+                message += f"\n🔐 *OTP* : `{escaped_otp}`"
         
-        message += "\n\nSelect an option:"
+        message += "\n\n*Select an option:*"
         
         sent_message = await query.edit_message_text(
             message,
             reply_markup=number_options_keyboard(number, country_code),
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN_V2
         )
         
         # Start OTP monitoring for this number
@@ -971,11 +979,16 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
             formatted_number = format_number_display(phone_number)
             flag = get_country_flag(country_code)
             
+            escaped_country = escape_markdown_v2(country_name)
+            escaped_number = escape_markdown_v2(formatted_number)
+            escaped_sender = escape_markdown_v2(immediate_sms_info['sms']['sender'])
+            escaped_otp = escape_markdown_v2(current_otp)
+            
             message = (
-                f"{flag} Country: {country_name}\n"
-                f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})\n"
-                f"🔐 {immediate_sms_info['sms']['sender']} : {current_otp}\n\n"
-                f"Select an option:"
+                f"{flag} *Country:* {escaped_country}\n"
+                f"📞 *Number:* `{escaped_number}`\n"
+                f"🔐 *{escaped_sender}* : `{escaped_otp}`\n\n"
+                f"*Select an option:*"
             )
             
             try:
@@ -984,7 +997,7 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                     message_id=message_id,
                     text=message,
                     reply_markup=number_options_keyboard(phone_number, country_code),
-                    parse_mode=ParseMode.MARKDOWN
+                    parse_mode=ParseMode.MARKDOWN_V2
                 )
                 logging.info(f"✅ Immediate OTP update successful for {phone_number}: {current_otp}")
                 
@@ -1009,9 +1022,21 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                     # Send clean OTP notification to user's private chat
                     monitoring_user_id = active_number_monitors[session_id].get('user_id')
                     if monitoring_user_id:
+                        escaped_number = escape_markdown_v2(formatted_number)
+                        escaped_sender = escape_markdown_v2(immediate_sms_info['sms']['sender'])
+                        escaped_otp = escape_markdown_v2(current_otp)
+                        
+                        # Create keyboard with copy buttons
+                        keyboard = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📋 Copy Number", callback_data=f"copy_number_{formatted_number}")],
+                            [InlineKeyboardButton("📋 Copy OTP", callback_data=f"copy_otp_{current_otp}")]
+                        ])
+                        
                         await context.bot.send_message(
                             chat_id=monitoring_user_id,  # Send to user's private chat
-                            text=f"📞 Number: {formatted_number}\n🔐 {immediate_sms_info['sms']['sender']} : {current_otp}"
+                            text=f"📞 *Number:* `{escaped_number}`\n🔐 *{escaped_sender}* : `{escaped_otp}`",
+                            reply_markup=keyboard,
+                            parse_mode=ParseMode.MARKDOWN_V2
                         )
                     return  # Exit monitoring since OTP was found
                     
@@ -1043,11 +1068,16 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                         formatted_number = format_number_display(phone_number)
                         flag = get_country_flag(country_code)
                         
+                        escaped_country = escape_markdown_v2(country_name)
+                        escaped_number = escape_markdown_v2(formatted_number)
+                        escaped_sender = escape_markdown_v2(sms_info['sms']['sender'])
+                        escaped_otp = escape_markdown_v2(current_otp)
+                        
                         message = (
-                            f"{flag} Country: {country_name}\n"
-                            f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})\n"
-                            f"🔐 {sms_info['sms']['sender']} : {current_otp}\n\n"
-                            f"Select an option:"
+                            f"{flag} *Country:* {escaped_country}\n"
+                            f"📞 *Number:* `{escaped_number}`\n"
+                            f"🔐 *{escaped_sender}* : `{escaped_otp}`\n\n"
+                            f"*Select an option:*"
                         )
                         
                         try:
@@ -1056,7 +1086,7 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                                 message_id=message_id,
                                 text=message,
                                 reply_markup=number_options_keyboard(phone_number, country_code),
-                                parse_mode=ParseMode.MARKDOWN
+                                parse_mode=ParseMode.MARKDOWN_V2
                             )
                             logging.info(f"✅ OTP detected and message updated for {phone_number}: {current_otp}")
                             
@@ -1081,9 +1111,21 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                                 # Send clean OTP notification to user's private chat
                                 monitoring_user_id = active_number_monitors[session_id].get('user_id')
                                 if monitoring_user_id:
+                                    escaped_number = escape_markdown_v2(formatted_number)
+                                    escaped_sender = escape_markdown_v2(sms_info['sms']['sender'])
+                                    escaped_otp = escape_markdown_v2(current_otp)
+                                    
+                                    # Create keyboard with copy buttons
+                                    keyboard = InlineKeyboardMarkup([
+                                        [InlineKeyboardButton("📋 Copy Number", callback_data=f"copy_number_{formatted_number}")],
+                                        [InlineKeyboardButton("📋 Copy OTP", callback_data=f"copy_otp_{current_otp}")]
+                                    ])
+                                    
                                     await context.bot.send_message(
                                         chat_id=monitoring_user_id,  # Send to user's private chat
-                                        text=f"📞 Number: {formatted_number}\n🔐 {sms_info['sms']['sender']} : {current_otp}"
+                                        text=f"📞 *Number:* `{escaped_number}`\n🔐 *{escaped_sender}* : `{escaped_otp}`",
+                                        reply_markup=keyboard,
+                                        parse_mode=ParseMode.MARKDOWN_V2
                                     )
                                 
                         except Exception as e:
@@ -1344,16 +1386,27 @@ async def show_sms(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sms_info = await get_latest_sms_for_number(number)
         
         if sms_info and sms_info['otp']:
-            # Display compact OTP format
+            # Display compact OTP format with copy functionality
             formatted_number = format_number_display(number)
-            message = f"📞 Number: {formatted_number}\n"
-            message += f"🔐 {sms_info['sms']['sender']} : {sms_info['otp']}"
+            escaped_number = escape_markdown_v2(formatted_number)
+            escaped_sender = escape_markdown_v2(sms_info['sms']['sender'])
+            escaped_otp = escape_markdown_v2(sms_info['otp'])
+            
+            message = f"📞 *Number:* `{escaped_number}`\n"
+            message += f"🔐 *{escaped_sender}* : `{escaped_otp}`"
+            
+            # Create keyboard with copy buttons
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📋 Copy Number", callback_data=f"copy_number_{formatted_number}")],
+                [InlineKeyboardButton("📋 Copy OTP", callback_data=f"copy_otp_{sms_info['otp']}")]
+            ])
             
             # Send as a new message
             await context.bot.send_message(
                 chat_id=query.from_user.id,
                 text=message,
-                parse_mode=ParseMode.MARKDOWN
+                reply_markup=keyboard,
+                parse_mode=ParseMode.MARKDOWN_V2
             )
         else:
             await query.answer("📭 No OTP found for this number today.", show_alert=True)
@@ -2149,6 +2202,73 @@ def format_number_display(number):
     
     return number
 
+def escape_markdown_v2(text):
+    """Escape special characters for MarkdownV2"""
+    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
+
+def create_number_display_with_copy(formatted_number, country_name=None, flag=None, additional_text=""):
+    """Create a number display with copy functionality using MarkdownV2 and inline keyboard"""
+    
+    # Escape the number for MarkdownV2
+    escaped_number = escape_markdown_v2(formatted_number)
+    
+    # Create the message text
+    message_parts = []
+    
+    if flag and country_name:
+        escaped_country = escape_markdown_v2(country_name)
+        message_parts.append(f"{flag} *Country:* {escaped_country}")
+    
+    # Add the number in a code block for easy copying
+    message_parts.append(f"📞 *Number:* `{escaped_number}`")
+    
+    if additional_text:
+        escaped_additional = escape_markdown_v2(additional_text)
+        message_parts.append(escaped_additional)
+    
+    message_text = "\n".join(message_parts)
+    
+    # Create inline keyboard with copy button
+    copy_button = InlineKeyboardButton(
+        text="📋 Copy Number",
+        callback_data=f"copy_number_{formatted_number}"
+    )
+    
+    return message_text, copy_button
+
+async def handle_copy_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the copy number callback"""
+    query = update.callback_query
+    await query.answer("Number copied to clipboard! 📋")
+    
+    # Extract the number from callback data
+    number = query.data.replace("copy_number_", "")
+    
+    # Send the number in a way that's easy to copy
+    await query.message.reply_text(
+        f"`{number}`",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_to_message_id=query.message.message_id
+    )
+
+async def handle_copy_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the copy OTP callback"""
+    query = update.callback_query
+    await query.answer("OTP copied to clipboard! 📋")
+    
+    # Extract the OTP from callback data
+    otp = query.data.replace("copy_otp_", "")
+    
+    # Send the OTP in a way that's easy to copy
+    await query.message.reply_text(
+        f"`{otp}`",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_to_message_id=query.message.message_id
+    )
+
 # === CSV PROCESSING ===
 async def process_csv_file(file_bytes):
     """Process the uploaded CSV file and return extracted numbers"""
@@ -2730,9 +2850,21 @@ async def background_otp_cleanup_task(app):
                                 for session_id, session_data in user_sessions.items():
                                     if session_data.get('phone_number') == phone_number:
                                         try:
+                                            escaped_number = escape_markdown_v2(formatted_number)
+                                            escaped_sender = escape_markdown_v2(sender)
+                                            escaped_otp = escape_markdown_v2(otp)
+                                            
+                                            # Create keyboard with copy buttons
+                                            keyboard = InlineKeyboardMarkup([
+                                                [InlineKeyboardButton("📋 Copy Number", callback_data=f"copy_number_{formatted_number}")],
+                                                [InlineKeyboardButton("📋 Copy OTP", callback_data=f"copy_otp_{otp}")]
+                                            ])
+                                            
                                             await app.bot.send_message(
                                                 chat_id=user_id,
-                                                text=f"📞 Number: {formatted_number}\n🔐 {sender} : {otp}"
+                                                text=f"📞 *Number:* `{escaped_number}`\n🔐 *{escaped_sender}* : `{escaped_otp}`",
+                                                reply_markup=keyboard,
+                                                parse_mode=ParseMode.MARKDOWN_V2
                                             )
                                             users_notified += 1
                                             logging.info(f"📱 Background cleanup: Sent OTP notification to user {user_id}")
@@ -2774,14 +2906,19 @@ async def background_otp_cleanup_task(app):
                                 try:
                                     session_info = f"\n🛑 Stopped {sessions_stopped} monitoring session(s)" if sessions_stopped > 0 else ""
                                     user_info = f"\n📱 Notified {users_notified} user(s)" if users_notified > 0 else ""
+                                    escaped_number = escape_markdown_v2(formatted_number)
+                                    escaped_sender = escape_markdown_v2(sender)
+                                    escaped_otp = escape_markdown_v2(otp)
+                                    cleanup_time = escape_markdown_v2(datetime.now(TIMEZONE).strftime('%H:%M:%S'))
+                                    
                                     await app.bot.send_message(
                                         chat_id=admin_id,
-                                        text=f"🔄 **Background Cleanup**\n\n"
-                                             f"📞 Number: {formatted_number}\n"
-                                             f"🔐 {sender} : {otp}\n"
-                                             f"🗑️ Auto-deleted from server{session_info}{user_info}\n\n"
-                                             f"ℹ️ _Background cleanup at {datetime.now(TIMEZONE).strftime('%H:%M:%S')}_",
-                                        parse_mode=ParseMode.MARKDOWN
+                                        text=f"🔄 *Background Cleanup*\n\n"
+                                             f"📞 *Number:* `{escaped_number}`\n"
+                                             f"🔐 *{escaped_sender}* : `{escaped_otp}`\n"
+                                             f"🗑️ Auto\\-deleted from server{session_info}{user_info}\n\n"
+                                             f"ℹ️ _Background cleanup at {cleanup_time}_",
+                                        parse_mode=ParseMode.MARKDOWN_V2
                                     )
                                 except Exception as notify_error:
                                     logging.error(f"Failed to notify admin {admin_id}: {notify_error}")
@@ -2928,6 +3065,8 @@ async def main():
     app.add_handler(CallbackQueryHandler(send_number, pattern="^country_"))
     # app.add_handler(CallbackQueryHandler(change_number, pattern="^change_"))  # TEMPORARILY SUSPENDED
     app.add_handler(CallbackQueryHandler(show_sms, pattern="^sms_"))
+    app.add_handler(CallbackQueryHandler(handle_copy_number, pattern="^copy_number_"))
+    app.add_handler(CallbackQueryHandler(handle_copy_otp, pattern="^copy_otp_"))
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(MessageHandler(filters.Document.FileExtension("csv") & filters.User(ADMIN_IDS), upload_csv))
     app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), handle_text_message))
