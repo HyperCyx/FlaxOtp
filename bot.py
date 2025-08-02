@@ -1957,8 +1957,13 @@ async def check_country_numbers(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text(status_text)
 
 async def show_my_morning_calls(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show all active morning calls for the user"""
+    """Show all active morning calls - ADMIN ONLY"""
     user_id = update.effective_user.id
+    
+    # Admin access control
+    if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
+        return
     
     if user_id not in user_monitoring_sessions or not user_monitoring_sessions[user_id]:
         await update.message.reply_text("📞 You have no active morning calls.")
@@ -2167,15 +2172,16 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 **🔍 MONITORING & TESTING:**
 🔟 `/monitoring` - Check active OTP monitoring status
-1️⃣1️⃣ `/test` - Debug command for testing features
-1️⃣2️⃣ `/forceotp +923066082919` - **Force OTP check for specific number**
-1️⃣3️⃣ `/countrynumbers` - Check available numbers per country
+1️⃣1️⃣ `/morningcalls` - View all active user monitoring sessions
+1️⃣2️⃣ `/test` - Debug command for testing features
+1️⃣3️⃣ `/forceotp +923066082919` - **Force OTP check for specific number**
+1️⃣4️⃣ `/countrynumbers` - Check available numbers per country
 
 **🌐 API & SESSION MANAGEMENT:**
-1️⃣4️⃣ `/checkapi` - Test SMS API connection status
-1️⃣5️⃣ `/updatesms PHPSESSID=abc123def456` - Update SMS session cookie
-1️⃣6️⃣ `/reloadsession` - Reload session from config.py file
-1️⃣7️⃣ `/clearcache` - Clear countries cache for performance
+1️⃣5️⃣ `/checkapi` - Test SMS API connection status
+1️⃣6️⃣ `/updatesms PHPSESSID=abc123def456` - Update SMS session cookie
+1️⃣7️⃣ `/reloadsession` - Reload session from config.py file
+1️⃣8️⃣ `/clearcache` - Clear countries cache for performance
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📋 **QUICK EXAMPLES:**
@@ -2223,11 +2229,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Shows your active phone number
 • Automatically checks for new OTPs
 • Displays recent verification codes
-
-📞 `/morningcalls` - View active sessions
-• Shows all your active monitoring
-• See remaining time for each number
-• Track multiple numbers at once
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
