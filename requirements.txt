@@ -1,6 +1,6 @@
 # === TELEGRAM BOT DEPENDENCIES ===
-python-telegram-bot==20.8
-# telegram==0.0.1  # Not needed with python-telegram-bot
+python-telegram-bot>=21.0
+# Use latest stable version with proper async support
 
 # === DATABASE DEPENDENCIES ===
 motor==3.7.1
