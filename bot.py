@@ -1366,63 +1366,42 @@ async def show_sms(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def refresh_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Refresh user status via callback and automatically check for OTPs"""
+    """Refresh user status via callback and check for OTPs"""
     query = update.callback_query
-    await query.answer("🔍 Refreshing and checking for OTPs...", show_alert=True)
+    await query.answer("🔍 Checking for new OTPs...", show_alert=True)
     user_id = query.from_user.id
     
-    if user_id not in user_monitoring_sessions or not user_monitoring_sessions[user_id]:
-        await query.edit_message_text("📱 You have no active sessions.\n\nUse /countries to get a phone number.")
+    # Get the current/last assigned number for this user
+    current_number = current_user_numbers.get(user_id)
+    
+    if not current_number:
+        await query.edit_message_text("📱 You have no active number.\n\nUse /countries to get a phone number.")
         return
     
-    status_text = "📊 Your Current Status:\n\n"
+    status_text = f"📱 Your Number: {format_number_display(current_number)}\n\n"
+    
+    # Check for OTP automatically
+    otp_text = "🧾 Recent OTPs: "
     buttons = []
-    otp_found = False
     
-    for session_id, session_data in user_monitoring_sessions[user_id].items():
-        phone_number = session_data['phone_number']
-        country_name = session_data['country_name']
-        start_time = session_data['start_time']
-        
-        # Calculate remaining time (2 minutes = 120 seconds)
-        current_time = datetime.now(TIMEZONE)
-        elapsed = (current_time - start_time).total_seconds()
-        remaining = max(0, 120 - elapsed)
-        
-        status_text += f"📱 {format_number_display(phone_number)}\n"
-        status_text += f"   🌍 {country_name}\n"
-        status_text += f"   ⏰ Remaining: {int(remaining)} seconds\n"
-        status_text += f"   🕐 Started: {start_time.strftime('%H:%M:%S')}\n"
-        
-        # Check for OTP automatically
-        try:
-            sms_info = await get_latest_sms_for_number(phone_number)
-            if sms_info and sms_info['otp']:
-                otp_found = True
-                status_text += f"   🔐 OTP: {sms_info['otp']} (from {sms_info['sms']['sender']})\n"
-            else:
-                status_text += f"   📭 No OTP received yet\n"
-        except Exception as e:
-            logging.error(f"Error checking SMS for {phone_number}: {e}")
-            status_text += f"   ❌ SMS check failed\n"
-        
-        status_text += "\n"
-        
-        # Add manual SMS check button for each number
-        buttons.append([InlineKeyboardButton(f"📩 Manual SMS Check for {format_number_display(phone_number)}", callback_data=f"sms_{phone_number}")])
+    try:
+        sms_info = await get_latest_sms_for_number(current_number)
+        if sms_info and sms_info['otp']:
+            otp_text += f"{sms_info['otp']} (from {sms_info['sms']['sender']})"
+        else:
+            otp_text += "None yet"
+    except Exception as e:
+        logging.error(f"Error checking SMS for {current_number}: {e}")
+        otp_text += "Check failed"
     
-    # Add refresh button
-    buttons.append([InlineKeyboardButton("🔄 Refresh Status", callback_data="refresh_status")])
+    status_text += otp_text
+    
+    # Add action buttons
+    buttons.append([InlineKeyboardButton("📩 Check SMS", callback_data=f"sms_{current_number}")])
+    buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data="refresh_status")])
     buttons.append([InlineKeyboardButton("🌍 Get New Number", callback_data="menu")])
     
     keyboard = InlineKeyboardMarkup(buttons)
-    
-    # Update message with results
-    if otp_found:
-        status_text = "✅ OTP Found!\n\n" + status_text
-    else:
-        status_text = "🔍 Status Updated\n\n" + status_text
-    
     await query.edit_message_text(status_text, reply_markup=keyboard)
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1945,64 +1924,43 @@ async def show_my_morning_calls(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text(status_text)
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show user's current status and automatically check for OTPs"""
+    """Show user's current number status and check for OTPs"""
     user_id = update.effective_user.id
     
-    if user_id not in user_monitoring_sessions or not user_monitoring_sessions[user_id]:
-        await update.message.reply_text("📱 You have no active sessions.\n\nUse /countries to get a phone number.")
+    # Get the current/last assigned number for this user
+    current_number = current_user_numbers.get(user_id)
+    
+    if not current_number:
+        await update.message.reply_text("📱 You have no active number.\n\nUse /countries to get a phone number.")
         return
     
     # Send initial loading message
-    loading_msg = await update.message.reply_text("🔍 Checking your numbers for OTPs...")
+    loading_msg = await update.message.reply_text("🔍 Checking for OTPs...")
     
-    status_text = "📊 Your Current Status:\n\n"
+    status_text = f"📱 Your Number: {format_number_display(current_number)}\n\n"
+    
+    # Check for OTP automatically
+    otp_text = "🧾 Recent OTPs: "
     buttons = []
-    otp_found = False
     
-    for session_id, session_data in user_monitoring_sessions[user_id].items():
-        phone_number = session_data['phone_number']
-        country_name = session_data['country_name']
-        start_time = session_data['start_time']
-        
-        # Calculate remaining time (2 minutes = 120 seconds)
-        current_time = datetime.now(TIMEZONE)
-        elapsed = (current_time - start_time).total_seconds()
-        remaining = max(0, 120 - elapsed)
-        
-        status_text += f"📱 {format_number_display(phone_number)}\n"
-        status_text += f"   🌍 {country_name}\n"
-        status_text += f"   ⏰ Remaining: {int(remaining)} seconds\n"
-        status_text += f"   🕐 Started: {start_time.strftime('%H:%M:%S')}\n"
-        
-        # Check for OTP automatically
-        try:
-            sms_info = await get_latest_sms_for_number(phone_number)
-            if sms_info and sms_info['otp']:
-                otp_found = True
-                status_text += f"   🔐 OTP: {sms_info['otp']} (from {sms_info['sms']['sender']})\n"
-            else:
-                status_text += f"   📭 No OTP received yet\n"
-        except Exception as e:
-            logging.error(f"Error checking SMS for {phone_number}: {e}")
-            status_text += f"   ❌ SMS check failed\n"
-        
-        status_text += "\n"
-        
-        # Add manual SMS check button for each number
-        buttons.append([InlineKeyboardButton(f"📩 Manual SMS Check for {format_number_display(phone_number)}", callback_data=f"sms_{phone_number}")])
+    try:
+        sms_info = await get_latest_sms_for_number(current_number)
+        if sms_info and sms_info['otp']:
+            otp_text += f"{sms_info['otp']} (from {sms_info['sms']['sender']})"
+        else:
+            otp_text += "None yet"
+    except Exception as e:
+        logging.error(f"Error checking SMS for {current_number}: {e}")
+        otp_text += "Check failed"
     
-    # Add refresh button
-    buttons.append([InlineKeyboardButton("🔄 Refresh Status", callback_data="refresh_status")])
+    status_text += otp_text
+    
+    # Add action buttons
+    buttons.append([InlineKeyboardButton("📩 Check SMS", callback_data=f"sms_{current_number}")])
+    buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data="refresh_status")])
     buttons.append([InlineKeyboardButton("🌍 Get New Number", callback_data="menu")])
     
     keyboard = InlineKeyboardMarkup(buttons)
-    
-    # Update the loading message with results
-    if otp_found:
-        status_text = "✅ OTP Found!\n\n" + status_text
-    else:
-        status_text = "🔍 Status Updated\n\n" + status_text
-    
     await loading_msg.edit_text(status_text, reply_markup=keyboard)
 
 async def update_sms_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
