@@ -11,7 +11,7 @@ import sys
 
 async def test_web_server():
     """Test the web server endpoints"""
-    base_url = "http://localhost:8000"
+    base_url = "http://localhost:8080"
     
     print("🧪 Testing web server endpoints...")
     

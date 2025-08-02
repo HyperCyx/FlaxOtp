@@ -10,6 +10,9 @@ pymongo==4.10.1
 aiohttp==3.12.15
 httpx==0.28.1
 
+# === WEB SERVER DEPENDENCIES ===
+Flask==3.0.0
+
 # === TIMEZONE DEPENDENCIES ===
 pytz==2025.2
 

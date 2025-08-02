@@ -8,7 +8,7 @@ service:
     - name: PYTHONDONTWRITEBYTECODE
       value: "1"
   ports:
-    - port: 8000
+    - port: 8080
       protocol: http
   routes:
     - path: /
@@ -18,7 +18,7 @@ service:
     max: 1
   healthcheck:
     path: /health
-    port: 8000
+    port: 8080
     interval: 30s
     timeout: 10s
     unhealthy_threshold: 3

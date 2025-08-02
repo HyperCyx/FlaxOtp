@@ -55,11 +55,11 @@ If you need to override configuration values, you can set these environment vari
 
 ## Web Server
 
-The bot runs with a web server wrapper (`web_server.py`) that:
+The bot runs with a Flask web server wrapper (`web_server.py`) that:
 
-- **Handles HTTP requests** on the port that Koyeb opens
+- **Handles HTTP requests** on the port that Koyeb opens (default: 8080)
 - **Provides health check endpoints** at `/health` and `/status`
-- **Runs the Telegram bot** in the background
+- **Runs the Telegram bot** in the background thread
 - **Responds to Koyeb's health checks** to ensure the service stays active
 
 ### Available Endpoints
@@ -104,7 +104,7 @@ View your bot logs in the Koyeb dashboard:
 1. **Local testing**
    ```bash
    docker build -t telegram-bot .
-   docker run -it telegram-bot
+   docker run -p 8080:8080 telegram-bot
    ```
 
 2. **Check logs**
