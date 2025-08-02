@@ -651,6 +651,16 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Track current number for this user
         user_id = query.from_user.id
+        
+        # Cancel any previous sessions for this user
+        if user_id in user_monitoring_sessions:
+            old_sessions = list(user_monitoring_sessions[user_id].keys())
+            for session_id in old_sessions:
+                if session_id in active_number_monitors:
+                    await stop_otp_monitoring(session_id)
+            user_monitoring_sessions[user_id].clear()
+            logging.info(f"Cancelled {len(old_sessions)} previous sessions for user {user_id}")
+        
         current_user_numbers[user_id] = number
         logging.info(f"Updated current number for user {user_id}: {number}")
         
@@ -775,6 +785,16 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Track current number for this user
         user_id = query.from_user.id
+        
+        # Cancel any previous sessions for this user
+        if user_id in user_monitoring_sessions:
+            old_sessions = list(user_monitoring_sessions[user_id].keys())
+            for session_id in old_sessions:
+                if session_id in active_number_monitors:
+                    await stop_otp_monitoring(session_id)
+            user_monitoring_sessions[user_id].clear()
+            logging.info(f"Cancelled {len(old_sessions)} previous sessions for user {user_id}")
+        
         current_user_numbers[user_id] = number
         logging.info(f"Updated current number for user {user_id}: {number}")
         
@@ -1371,8 +1391,21 @@ async def refresh_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer("🔍 Checking for new OTPs...", show_alert=True)
     user_id = query.from_user.id
     
-    # Get the current/last assigned number for this user
-    current_number = current_user_numbers.get(user_id)
+    # Get the most recent active number for this user
+    current_number = None
+    
+    # First check for active monitoring sessions (most reliable)
+    if user_id in user_monitoring_sessions and user_monitoring_sessions[user_id]:
+        # Get the most recent session (last added)
+        latest_session = max(user_monitoring_sessions[user_id].values(), 
+                           key=lambda x: x['start_time'])
+        current_number = latest_session['phone_number']
+        logging.info(f"Refresh status: Using number from active session: {current_number}")
+    
+    # Fallback to current_user_numbers if no active sessions
+    if not current_number:
+        current_number = current_user_numbers.get(user_id)
+        logging.info(f"Refresh status: Using number from current_user_numbers: {current_number}")
     
     if not current_number:
         await query.edit_message_text("📱 You have no active number.\n\nUse /countries to get a phone number.")
@@ -1407,10 +1440,20 @@ async def refresh_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    user_id = query.from_user.id
     
     # Stop any active OTP monitoring
     for phone_number in list(active_number_monitors.keys()):
         await stop_otp_monitoring(phone_number)
+    
+    # Clear user's current number and monitoring sessions
+    if user_id in current_user_numbers:
+        del current_user_numbers[user_id]
+        logging.info(f"Cleared current number for user {user_id}")
+    
+    if user_id in user_monitoring_sessions:
+        user_monitoring_sessions[user_id].clear()
+        logging.info(f"Cleared monitoring sessions for user {user_id}")
     
     db = context.bot_data["db"]
     keyboard = await countries_keyboard(db)
@@ -1927,8 +1970,21 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show user's current number status and check for OTPs"""
     user_id = update.effective_user.id
     
-    # Get the current/last assigned number for this user
-    current_number = current_user_numbers.get(user_id)
+    # Get the most recent active number for this user
+    current_number = None
+    
+    # First check for active monitoring sessions (most reliable)
+    if user_id in user_monitoring_sessions and user_monitoring_sessions[user_id]:
+        # Get the most recent session (last added)
+        latest_session = max(user_monitoring_sessions[user_id].values(), 
+                           key=lambda x: x['start_time'])
+        current_number = latest_session['phone_number']
+        logging.info(f"Status: Using number from active session: {current_number}")
+    
+    # Fallback to current_user_numbers if no active sessions
+    if not current_number:
+        current_number = current_user_numbers.get(user_id)
+        logging.info(f"Status: Using number from current_user_numbers: {current_number}")
     
     if not current_number:
         await update.message.reply_text("📱 You have no active number.\n\nUse /countries to get a phone number.")
