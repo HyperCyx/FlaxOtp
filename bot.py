@@ -2201,6 +2201,64 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(admin_commands, parse_mode=ParseMode.MARKDOWN)
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show user commands and help information"""
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "User"
+    
+    help_text = f"""
+📱 **TELEGRAM BOT HELP**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+👋 **Welcome {username}!**
+
+**🌟 MAIN COMMANDS:**
+
+🌍 `/countries` - Get a phone number
+• Shows all available countries
+• Click to select and get a number
+• Perfect for verification codes
+
+📊 `/status` - Check your current number
+• Shows your active phone number
+• Automatically checks for new OTPs
+• Displays recent verification codes
+
+📞 `/morningcalls` - View active sessions
+• Shows all your active monitoring
+• See remaining time for each number
+• Track multiple numbers at once
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**🚀 QUICK START GUIDE:**
+
+1️⃣ Type `/countries` to get started
+2️⃣ Select your preferred country
+3️⃣ Receive a phone number instantly
+4️⃣ Use `/status` to check for OTPs
+5️⃣ Get verification codes automatically!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**💡 PRO TIPS:**
+
+🔄 **Get New Numbers**: Click "🆕 New Number" button
+📩 **Check SMS**: Use "📩 Check SMS" for manual checks  
+⚡ **Real-time Updates**: `/status` auto-checks for new OTPs
+🕐 **Session Time**: Each number works for 2 minutes
+🆕 **Fresh Start**: Use `/countries` anytime for new numbers
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 **User ID**: `{user_id}`
+📍 **Status**: Ready to receive verification codes!
+
+Need help? Just type any command to get started! 🚀
+"""
+    
+    await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+
 async def clear_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Clear countries cache to force refresh"""
     user_id = update.effective_user.id
@@ -3000,6 +3058,7 @@ async def main():
     app.add_handler(CommandHandler("monitoring", check_monitoring_status))
     app.add_handler(CommandHandler("countries", countries))
     app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("countrynumbers", check_country_numbers))
     app.add_handler(CommandHandler("resetnumber", reset_current_number))
     app.add_handler(CommandHandler("morningcalls", show_my_morning_calls))
