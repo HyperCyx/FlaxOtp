@@ -53,11 +53,26 @@ If you need to override configuration values, you can set these environment vari
 2. Click on "Settings" → "Environment variables"
 3. Add your variables as needed
 
+## Web Server
+
+The bot runs with a web server wrapper (`web_server.py`) that:
+
+- **Handles HTTP requests** on the port that Koyeb opens
+- **Provides health check endpoints** at `/health` and `/status`
+- **Runs the Telegram bot** in the background
+- **Responds to Koyeb's health checks** to ensure the service stays active
+
+### Available Endpoints
+
+- `/` - Root endpoint with basic info
+- `/health` - Health check for Koyeb monitoring
+- `/status` - Bot status and uptime information
+
 ## Monitoring
 
 ### Health Checks
 
-The Dockerfile includes a health check that runs every 30 seconds. Koyeb will automatically restart your app if it becomes unhealthy.
+The Dockerfile includes a health check that runs every 30 seconds using the `/health` endpoint. Koyeb will automatically restart your app if it becomes unhealthy.
 
 ### Logs
 
