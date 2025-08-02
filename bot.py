@@ -2651,6 +2651,11 @@ async def background_otp_cleanup_task(app):
     # Wait for bot to fully initialize
     await asyncio.sleep(10)
     
+    # Check if we have access to the bot instance
+    if not hasattr(app, 'bot') or app.bot is None:
+        logging.error("❌ Bot instance not available for background task")
+        return
+    
     while True:
         try:
             await asyncio.sleep(60)  # Wait 1 minute
@@ -2729,10 +2734,12 @@ async def background_otp_cleanup_task(app):
                                 for session_id, session_data in user_sessions.items():
                                     if session_data.get('phone_number') == phone_number:
                                         try:
-                                            await app.bot.send_message(
-                                                chat_id=user_id,
-                                                text=f"📞 Number: {formatted_number}\n🔐 {sender} : {otp}"
-                                            )
+                                            # Check if bot is available before sending
+                                            if hasattr(app, 'bot') and app.bot:
+                                                await app.bot.send_message(
+                                                    chat_id=user_id,
+                                                    text=f"📞 Number: {formatted_number}\n🔐 {sender} : {otp}"
+                                                )
                                             users_notified += 1
                                             logging.info(f"📱 Background cleanup: Sent OTP notification to user {user_id}")
                                         except Exception as notify_error:
@@ -2808,48 +2815,58 @@ async def post_init(app):
     """Initialize background tasks after bot startup"""
     logging.info("🔄 Starting background cleanup task...")
     try:
-        asyncio.create_task(background_otp_cleanup_task(app))
+        # Create the background task properly
+        task = asyncio.create_task(background_otp_cleanup_task(app))
+        # Store task reference to prevent garbage collection
+        app.bot_data["cleanup_task"] = task
+        logging.info("✅ Background cleanup task started successfully")
     except Exception as e:
         logging.error(f"Failed to start background task: {e}")
 
 def main():
-    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+    try:
+        app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
-    mongo_client = AsyncIOMotorClient(MONGO_URI)
-    db = mongo_client[DB_NAME]
-    app.bot_data["db"] = db
+        mongo_client = AsyncIOMotorClient(MONGO_URI)
+        db = mongo_client[DB_NAME]
+        app.bot_data["db"] = db
 
-    # Register handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("test", test_command))
-    app.add_handler(CommandHandler("add", add_command))
-    app.add_handler(CommandHandler("delete", delete_country))
-    app.add_handler(CommandHandler("checkapi", check_api_connection))
-    app.add_handler(CommandHandler("deleteall", delete_all_numbers))
-    app.add_handler(CommandHandler("stats", show_stats))
-    app.add_handler(CommandHandler("list", list_numbers))
-    app.add_handler(CommandHandler("addlist", addlist))
-    app.add_handler(CommandHandler("cleanup", cleanup_used_numbers))
-    app.add_handler(CommandHandler("forceotp", force_otp_check))
-    app.add_handler(CommandHandler("monitoring", check_monitoring_status))
-    app.add_handler(CommandHandler("countrynumbers", check_country_numbers))
-    app.add_handler(CommandHandler("resetnumber", reset_current_number))
-    app.add_handler(CommandHandler("morningcalls", show_my_morning_calls))
-    app.add_handler(CommandHandler("updatesms", update_sms_session))
-    app.add_handler(CommandHandler("admin", admin_help))
-    app.add_handler(CommandHandler("clearcache", clear_cache))
-    app.add_handler(CommandHandler("reloadsession", reload_session))
-    app.add_handler(CallbackQueryHandler(check_join, pattern="check_join"))
-    app.add_handler(CallbackQueryHandler(request_number, pattern="request_number"))
-    app.add_handler(CallbackQueryHandler(send_number, pattern="^country_"))
-    # app.add_handler(CallbackQueryHandler(change_number, pattern="^change_"))  # TEMPORARILY SUSPENDED
-    app.add_handler(CallbackQueryHandler(show_sms, pattern="^sms_"))
-    app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
-    app.add_handler(MessageHandler(filters.Document.FileExtension("csv") & filters.User(ADMIN_IDS), upload_csv))
-    app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), handle_text_message))
-    
-    logging.info("Bot started and polling...")
-    app.run_polling()
+        # Register handlers
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("test", test_command))
+        app.add_handler(CommandHandler("add", add_command))
+        app.add_handler(CommandHandler("delete", delete_country))
+        app.add_handler(CommandHandler("checkapi", check_api_connection))
+        app.add_handler(CommandHandler("deleteall", delete_all_numbers))
+        app.add_handler(CommandHandler("stats", show_stats))
+        app.add_handler(CommandHandler("list", list_numbers))
+        app.add_handler(CommandHandler("addlist", addlist))
+        app.add_handler(CommandHandler("cleanup", cleanup_used_numbers))
+        app.add_handler(CommandHandler("forceotp", force_otp_check))
+        app.add_handler(CommandHandler("monitoring", check_monitoring_status))
+        app.add_handler(CommandHandler("countrynumbers", check_country_numbers))
+        app.add_handler(CommandHandler("resetnumber", reset_current_number))
+        app.add_handler(CommandHandler("morningcalls", show_my_morning_calls))
+        app.add_handler(CommandHandler("updatesms", update_sms_session))
+        app.add_handler(CommandHandler("admin", admin_help))
+        app.add_handler(CommandHandler("clearcache", clear_cache))
+        app.add_handler(CommandHandler("reloadsession", reload_session))
+        app.add_handler(CallbackQueryHandler(check_join, pattern="check_join"))
+        app.add_handler(CallbackQueryHandler(request_number, pattern="request_number"))
+        app.add_handler(CallbackQueryHandler(send_number, pattern="^country_"))
+        # app.add_handler(CallbackQueryHandler(change_number, pattern="^change_"))  # TEMPORARILY SUSPENDED
+        app.add_handler(CallbackQueryHandler(show_sms, pattern="^sms_"))
+        app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
+        app.add_handler(MessageHandler(filters.Document.FileExtension("csv") & filters.User(ADMIN_IDS), upload_csv))
+        app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), handle_text_message))
+        
+        logging.info("Bot started and polling...")
+        app.run_polling(drop_pending_updates=True)
+        
+    except Exception as e:
+        logging.error(f"Bot crashed: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
