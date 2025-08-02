@@ -404,7 +404,7 @@ def number_options_keyboard(number, country_code):
     return InlineKeyboardMarkup([
         # [InlineKeyboardButton("🔄 Change", callback_data=f"change_{country_code}")],  # TEMPORARILY SUSPENDED
         [InlineKeyboardButton("📩 Show SMS", callback_data=f"sms_{number}")],
-        [InlineKeyboardButton("🔄 Change", callback_data="menu")]
+        [InlineKeyboardButton("🆕 New Number", callback_data="menu")]
     ])
 
 # === COMMAND HANDLERS ===
