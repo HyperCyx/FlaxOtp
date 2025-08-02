@@ -2822,12 +2822,82 @@ async def post_init(app):
     except Exception as e:
         logging.error(f"Failed to start background task: {e}")
 
-async def main():
-    # Build the application
-    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+async def check_network_connectivity():
+    """Check if we can reach Telegram's API servers"""
+    import aiohttp
+    import socket
     
-    # Initialize the bot properly
-    await app.initialize()
+    # First check DNS resolution
+    try:
+        logging.info("🔍 Checking DNS resolution for api.telegram.org...")
+        socket.getaddrinfo('api.telegram.org', 443)
+        logging.info("✅ DNS resolution successful")
+    except Exception as e:
+        logging.error(f"❌ DNS resolution failed: {e}")
+        logging.info("💡 Tip: Try using a different DNS server (e.g., 8.8.8.8 or 1.1.1.1)")
+        return False
+    
+    # Then check HTTP connectivity
+    try:
+        logging.info("🌐 Checking HTTP connectivity to Telegram API...")
+        connector = aiohttp.TCPConnector(
+            ttl_dns_cache=300,
+            use_dns_cache=True,
+            limit=100,
+            limit_per_host=30,
+            enable_cleanup_closed=True
+        )
+        
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=15, connect=10),
+            connector=connector
+        ) as session:
+            async with session.get('https://api.telegram.org', ssl=False) as response:
+                if response.status == 200 or response.status == 401:  # 401 is expected without token
+                    logging.info("✅ Network connectivity to Telegram API is working")
+                    return True
+                else:
+                    logging.warning(f"⚠️ Unexpected response from Telegram API: {response.status}")
+                    return False
+    except Exception as e:
+        logging.error(f"❌ Network connectivity check failed: {e}")
+        logging.info("💡 Tip: Check your firewall and proxy settings")
+        return False
+
+async def main():
+    # Check network connectivity first
+    connectivity_ok = await check_network_connectivity()
+    if not connectivity_ok:
+        logging.error("❌ Network connectivity issues detected. Please check your internet connection and firewall settings.")
+        logging.info("💡 Tip: Make sure your server can access api.telegram.org on port 443")
+        return
+    
+    # Build the application with better timeout settings
+    app = (ApplicationBuilder()
+           .token(TOKEN)
+           .post_init(post_init)
+           .connect_timeout(30.0)  # 30 seconds connection timeout
+           .read_timeout(30.0)     # 30 seconds read timeout
+           .write_timeout(30.0)    # 30 seconds write timeout
+           .pool_timeout(5.0)      # 5 seconds pool timeout
+           .build())
+    
+    # Initialize the bot properly with retry logic
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            logging.info(f"Attempting to initialize bot (attempt {attempt + 1}/{max_retries})...")
+            await app.initialize()
+            logging.info("✅ Bot initialized successfully!")
+            break
+        except Exception as e:
+            if attempt == max_retries - 1:
+                logging.error(f"❌ Failed to initialize bot after {max_retries} attempts: {e}")
+                raise
+            else:
+                logging.warning(f"⚠️ Bot initialization failed (attempt {attempt + 1}): {e}")
+                logging.info(f"🔄 Retrying in 5 seconds...")
+                await asyncio.sleep(5)
     
     mongo_client = AsyncIOMotorClient(MONGO_URI)
     db = mongo_client[DB_NAME]
@@ -2865,24 +2935,46 @@ async def main():
     logging.info("Bot started and polling...")
     
     try:
+        # Start the bot with retry logic
+        logging.info("🚀 Starting bot...")
         await app.start()
-        await app.updater.start_polling()
+        
+        # Start polling with retry logic
+        max_polling_retries = 3
+        for attempt in range(max_polling_retries):
+            try:
+                logging.info(f"📡 Starting polling (attempt {attempt + 1}/{max_polling_retries})...")
+                await app.updater.start_polling()
+                logging.info("✅ Bot polling started successfully!")
+                break
+            except Exception as e:
+                if attempt == max_polling_retries - 1:
+                    logging.error(f"❌ Failed to start polling after {max_polling_retries} attempts: {e}")
+                    raise
+                else:
+                    logging.warning(f"⚠️ Polling start failed (attempt {attempt + 1}): {e}")
+                    logging.info(f"🔄 Retrying in 5 seconds...")
+                    await asyncio.sleep(5)
         
         # Keep the bot running
         import signal
         stop_event = asyncio.Event()
         
         def signal_handler(signum, frame):
+            logging.info("🛑 Received shutdown signal")
             stop_event.set()
         
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
         
+        logging.info("🤖 Bot is running! Press Ctrl+C to stop.")
         await stop_event.wait()
     except KeyboardInterrupt:
-        logging.info("Bot stopped by user")
+        logging.info("🛑 Bot stopped by user (Ctrl+C)")
     except Exception as e:
-        logging.error(f"Bot error: {e}")
+        logging.error(f"❌ Bot error: {e}")
+        import traceback
+        logging.error(f"Full traceback: {traceback.format_exc()}")
     finally:
         # Cleanup
         logging.info("Shutting down bot...")
@@ -2906,4 +2998,22 @@ async def main():
         mongo_client.close()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Set up better logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Also log network-related messages
+    logging.getLogger('httpx').setLevel(logging.WARNING)  # Reduce httpx noise
+    logging.getLogger('telegram').setLevel(logging.INFO)
+    
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("🛑 Program interrupted by user")
+    except Exception as e:
+        logging.error(f"❌ Fatal error: {e}")
+        import traceback
+        logging.error(f"Full traceback: {traceback.format_exc()}")
