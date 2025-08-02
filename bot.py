@@ -1818,28 +1818,16 @@ async def check_monitoring_status(update: Update, context: ContextTypes.DEFAULT_
     await update.message.reply_text(status_text)
 
 async def countries(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show all countries with their numbers in a simple list"""
+    """Show all countries with interactive selection menu"""
     db = context.bot_data["db"]
-    countries_coll = db[COUNTRIES_COLLECTION]
     
-    # Get all countries
-    countries = await countries_coll.find({}).to_list(length=None)
+    # Create interactive keyboard with all countries
+    keyboard = await countries_keyboard(db)
     
-    if not countries:
-        await update.message.reply_text("📭 No countries found in database.")
-        return
-    
-    # Sort countries by display name
-    countries.sort(key=lambda x: x.get("display_name", x.get("country_code", "")))
-    
-    status_text = "🌍 Available Countries:\n\n"
-    
-    for country in countries:
-        country_code = country["country_code"]
-        country_name = country["display_name"]
-        status_text += f"{country_code} - {country_name}\n"
-    
-    await update.message.reply_text(status_text)
+    await update.message.reply_text(
+        "🌍 Select a country to get a phone number:",
+        reply_markup=keyboard
+    )
 
 async def check_country_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check how many numbers are available for each country"""
