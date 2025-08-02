@@ -1,8 +1,13 @@
 import logging
 import os
+import asyncio
 from io import BytesIO, StringIO
 from datetime import datetime, timedelta
 import csv
+import time
+import re
+import json
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -16,64 +21,238 @@ from telegram.ext import (
 from motor.motor_asyncio import AsyncIOMotorClient
 import pytz
 import pycountry
-import re
 import aiohttp
-import json
-import time
 
-# === CONFIGURATION ===
-TOKEN = "7650570527:AAG9K_XGEZ2MGcXkBc2h7cltVPQTWayhh00"
-CHANNEL_ID = -1002555911826
-CHANNEL_LINK = "https://t.me/+6Cw11PRcrFc1NmI1"
-MONGO_URI = "mongodb+srv://noob:K3a4ofLngiMG8Hl9@tele.fjm9acq.mongodb.net/?retryWrites=true&w=majority"
-DB_NAME = "TelegramBotDB"
-COLLECTION_NAME = "numbers"
-COUNTRIES_COLLECTION = "countries"
-USERS_COLLECTION = "verified_users"
-ADMIN_IDS = {7762548831}
+# Import all configurations from config.py
+from config import *
 
-# SMS API Configuration
-SMS_API_BASE_URL = "http://51.83.103.80"
-SMS_API_ENDPOINT = "/ints/agent/res/data_smscdr.php"
-SMS_API_COOKIE = "PHPSESSID=jfi9fn51crfub5jj850qte6tah"
+# === GLOBAL VARIABLES ===
+TIMEZONE = pytz.timezone(TIMEZONE_NAME)
+logging.basicConfig(level=getattr(logging, LOGGING_LEVEL))
 
-# OTP Monitoring Configuration
-OTP_CHECK_INTERVAL = 5  # Check for new OTPs every 5 seconds
-OTP_TIMEOUT = 300  # Return number to pool after 5 minutes if no OTP
-active_number_monitors = {}  # Store active monitors for each number
+# Session management - initialize from config
+CURRENT_SMS_API_COOKIE = SMS_API_COOKIE
+logging.info(f"🔑 Initialized SMS API session from config: {CURRENT_SMS_API_COOKIE[:20]}...{CURRENT_SMS_API_COOKIE[-10:]}")
 
-TIMEZONE = pytz.timezone('Asia/Riyadh')
-logging.basicConfig(level=logging.INFO)
+# Admin notification rate limiting
+last_api_failure_notification = {}  # Track last notification time for each failure type
+
+# Bot state variables
 uploaded_csv = None
 user_states = {}  # Store user states for country input
 manual_numbers = {}  # Store manual numbers for each user
 current_user_numbers = {}  # Track current number for each user
 user_monitoring_sessions = {}  # Track multiple monitoring sessions per user
+active_number_monitors = {}  # Store active monitors for each number
+
+# PERFORMANCE OPTIMIZATION: Cache for country data to avoid repeated DB queries
+countries_cache = None
+countries_cache_time = None
+
+def clear_countries_cache():
+    """Clear the countries cache to force refresh"""
+    global countries_cache, countries_cache_time
+    countries_cache = None
+    countries_cache_time = None
+    logging.info("Countries cache cleared")
+
+# === SESSION MANAGEMENT FUNCTIONS ===
+def reload_config_session():
+    """Reload SMS API session from config file"""
+    global CURRENT_SMS_API_COOKIE
+    try:
+        import importlib
+        import config
+        importlib.reload(config)
+        
+        old_session = CURRENT_SMS_API_COOKIE
+        CURRENT_SMS_API_COOKIE = config.SMS_API_COOKIE
+        
+        if old_session != CURRENT_SMS_API_COOKIE:
+            logging.info(f"🔄 SMS session reloaded from config file")
+            logging.info(f"🔑 Old: {old_session[:20]}...{old_session[-10:]}")
+            logging.info(f"🔑 New: {CURRENT_SMS_API_COOKIE[:20]}...{CURRENT_SMS_API_COOKIE[-10:]}")
+            return True
+        return False
+    except Exception as e:
+        logging.error(f"❌ Failed to reload config session: {e}")
+        return False
+
+def get_current_sms_cookie():
+    """Get the current active SMS API cookie"""
+    return CURRENT_SMS_API_COOKIE
+
+def update_runtime_session(new_cookie):
+    """Update the runtime session without modifying config file"""
+    global CURRENT_SMS_API_COOKIE
+    old_session = CURRENT_SMS_API_COOKIE
+    CURRENT_SMS_API_COOKIE = new_cookie
+    logging.info(f"🔄 Runtime SMS session updated")
+    logging.info(f"🔑 Old: {old_session[:20]}...{old_session[-10:]}")
+    logging.info(f"🔑 New: {CURRENT_SMS_API_COOKIE[:20]}...{CURRENT_SMS_API_COOKIE[-10:]}")
+
+def update_config_file_session(new_cookie):
+    """Update the session in config.py file"""
+    try:
+        with open('config.py', 'r') as f:
+            config_content = f.read()
+        
+        # Replace the SMS_API_COOKIE line
+        import re
+        config_content = re.sub(
+            r'SMS_API_COOKIE = "[^"]*"',
+            f'SMS_API_COOKIE = "{new_cookie}"',
+            config_content
+        )
+        
+        with open('config.py', 'w') as f:
+            f.write(config_content)
+        
+        logging.info(f"✅ Config file updated with new session")
+        return True
+    except Exception as e:
+        logging.error(f"❌ Failed to update config file: {e}")
+        return False
+
+# === ADMIN NOTIFICATION FUNCTIONS ===
+async def notify_admins_api_failure(failure_type):
+    """Notify all admins about SMS API failure with rate limiting"""
+    try:
+        # Rate limiting - only send notification once per 10 minutes for same failure type
+        current_time = datetime.now(TIMEZONE)
+        if failure_type in last_api_failure_notification:
+            time_diff = (current_time - last_api_failure_notification[failure_type]).total_seconds()
+            if time_diff < 600:  # 10 minutes
+                logging.info(f"🔇 API failure notification rate limited for {failure_type}")
+                return
+        
+        last_api_failure_notification[failure_type] = current_time
+        
+        from telegram import Bot
+        bot = Bot(token=TOKEN)
+        
+        current_time_str = current_time.strftime('%Y-%m-%d %H:%M:%S')
+        current_session = get_current_sms_cookie()
+        
+        if failure_type == "session_expired":
+            message = (
+                f"🚨 **SMS API Session Expired**\n\n"
+                f"⏰ **Time**: {current_time_str}\n"
+                f"🔑 **Current Session**: `{current_session[:20]}...{current_session[-10:]}`\n"
+                f"📡 **Endpoint**: {SMS_API_BASE_URL}\n\n"
+                f"❌ **Issue**: Session expired - redirected to login\n"
+                f"🔄 **Auto Recovery**: Failed (config has same session)\n\n"
+                f"🔧 **Required Action**:\n"
+                f"• Get fresh session from SMS panel\n"
+                f"• Use `/updatesms PHPSESSID=new_session`\n"
+                f"• Or update config.py and use `/reloadsession`\n\n"
+                f"⚠️ **Impact**: OTP detection currently not working"
+            )
+        elif failure_type == "connection_error":
+            message = (
+                f"🚨 **SMS API Connection Failed**\n\n"
+                f"⏰ **Time**: {current_time_str}\n"
+                f"📡 **Endpoint**: {SMS_API_BASE_URL}\n\n"
+                f"❌ **Issue**: Cannot connect to SMS API server\n"
+                f"🔧 **Possible Causes**:\n"
+                f"• Server is down\n"
+                f"• Network connectivity issues\n"
+                f"• Firewall blocking requests\n\n"
+                f"💡 **Suggestions**:\n"
+                f"• Check server status\n"
+                f"• Use `/checkapi` to test connection\n"
+                f"• Verify network connectivity\n\n"
+                f"⚠️ **Impact**: OTP detection currently not working"
+            )
+        elif failure_type == "access_blocked":
+            message = (
+                f"🚨 **SMS API Access Blocked**\n\n"
+                f"⏰ **Time**: {current_time_str}\n"
+                f"🔑 **Session**: `{current_session[:20]}...{current_session[-10:]}`\n"
+                f"📡 **Endpoint**: {SMS_API_BASE_URL}\n\n"
+                f"❌ **Issue**: Direct script access not allowed\n"
+                f"🔧 **Required Action**:\n"
+                f"• Login to SMS panel manually\n"
+                f"• Get fresh session cookie\n"
+                f"• Update using `/updatesms PHPSESSID=new_session`\n\n"
+                f"⚠️ **Impact**: OTP detection currently not working"
+            )
+        else:
+            message = (
+                f"🚨 **SMS API Error**\n\n"
+                f"⏰ **Time**: {current_time_str}\n"
+                f"📡 **Endpoint**: {SMS_API_BASE_URL}\n"
+                f"❌ **Issue**: {failure_type}\n\n"
+                f"🔧 **Suggestion**: Use `/checkapi` to diagnose\n"
+                f"⚠️ **Impact**: OTP detection may not be working"
+            )
+        
+        # Send to all admins
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text=message,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                logging.info(f"📢 API failure notification sent to admin {admin_id}")
+            except Exception as e:
+                logging.error(f"❌ Failed to notify admin {admin_id}: {e}")
+                
+    except Exception as e:
+        logging.error(f"❌ Failed to send admin notifications: {e}")
+
+async def notify_admins_api_recovery():
+    """Notify all admins about successful API recovery"""
+    try:
+        from telegram import Bot
+        bot = Bot(token=TOKEN)
+        
+        current_time = datetime.now(TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')
+        current_session = get_current_sms_cookie()
+        
+        message = (
+            f"✅ **SMS API Auto-Recovery Successful**\n\n"
+            f"⏰ **Time**: {current_time}\n"
+            f"🔑 **New Session**: `{current_session[:20]}...{current_session[-10:]}`\n"
+            f"📡 **Endpoint**: {SMS_API_BASE_URL}\n\n"
+            f"🔄 **What Happened**:\n"
+            f"• Session expired and was detected\n"
+            f"• Auto-reloaded from config.py file\n"
+            f"• API connection restored\n\n"
+            f"✅ **Status**: OTP detection fully operational\n"
+            f"💡 **Tip**: Use `/checkapi` to verify health"
+        )
+        
+        # Send to all admins
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text=message,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                logging.info(f"📢 API recovery notification sent to admin {admin_id}")
+            except Exception as e:
+                logging.error(f"❌ Failed to notify admin {admin_id}: {e}")
+                
+    except Exception as e:
+        logging.error(f"❌ Failed to send recovery notifications: {e}")
 
 # === UTILITY FUNCTIONS ===
+async def send_lol_message(update: Update):
+    """Send a fun message when users try to use admin commands"""
+    await update.message.reply_text("Lol")
+
 def extract_otp_from_message(message):
-    """Extract OTP from SMS message"""
+    """Extract OTP from SMS message using patterns from config"""
     if not message:
         return None
-    
-    # Common OTP patterns
-    patterns = [
-        r'\b(\d{4,6})\b',  # 4-6 digit OTP
-        r'code[:\s]*(\d{4,6})',  # "code: 123456"
-        r'verification[:\s]*(\d{4,6})',  # "verification: 123456"
-        r'OTP[:\s]*(\d{4,6})',  # "OTP: 123456"
-        r'password[:\s]*(\d{4,6})',  # "password: 123456"
-        r'pin[:\s]*(\d{4,6})',  # "pin: 123456"
-        r'passcode[:\s]*(\d{4,6})',  # "passcode: 123456"
-        r'(\d{4,6})[^\d]*$',  # OTP at end of message
-        r'(\d{4,6})\s+is\s+your',  # "123456 is your"
-        r'your\s+(\d{4,6})',  # "your 123456"
-    ]
     
     message_lower = message.lower()
     logging.info(f"Extracting OTP from message: {message}")
     
-    for pattern in patterns:
+    for pattern in OTP_PATTERNS:
         match = re.search(pattern, message_lower)
         if match:
             otp = match.group(1)
@@ -146,7 +325,7 @@ def extract_country_from_range(range_str):
     return None
 
 def detect_country_code(number, range_str=None):
-    """Detect country code from number and range string"""
+    """Detect country code from number and range string using config prefixes"""
     # First try to detect from range string
     if range_str:
         country_code = extract_country_from_range(range_str)
@@ -156,19 +335,8 @@ def detect_country_code(number, range_str=None):
     # Then try to detect from number prefix
     number = clean_number(str(number))
     
-    # Known country prefixes
-    country_prefixes = {
-        '591': 'bo',  # Bolivia
-        '51': 'pe',   # Peru
-        '1': 'us',    # USA
-        '44': 'gb',   # UK
-        '91': 'in',   # India
-        '966': 'sa',  # Saudi Arabia
-        '94': 'lk',   # Sri Lanka
-    }
-    
-    # Check if number starts with known prefix
-    for prefix, code in country_prefixes.items():
+    # Check if number starts with known prefix from config
+    for prefix, code in COUNTRY_PREFIXES.items():
         if number.startswith(prefix):
             return code
     
@@ -187,13 +355,35 @@ def number_keyboard():
     ])
 
 async def countries_keyboard(db):
-    countries_coll = db[COUNTRIES_COLLECTION]
-    countries = await countries_coll.distinct("country_code")
+    global countries_cache, countries_cache_time
+    from datetime import datetime, timedelta
+    
+    # PERFORMANCE OPTIMIZATION: Use cache if available and fresh (5 minutes)
+    now = datetime.now()
+    if countries_cache and countries_cache_time and (now - countries_cache_time) < timedelta(minutes=5):
+        logging.info("Using cached countries data")
+        countries_data = countries_cache
+    else:
+        logging.info("Refreshing countries cache")
+        countries_coll = db[COUNTRIES_COLLECTION]
+        
+        # PERFORMANCE OPTIMIZATION: Get all country data in a single query instead of individual queries
+        countries_data = await countries_coll.find({}).to_list(length=None)
+        
+        # Sort by display_name for better user experience
+        countries_data.sort(key=lambda x: x.get("display_name", x.get("country_code", "")))
+        
+        # Cache the result
+        countries_cache = countries_data
+        countries_cache_time = now
     
     buttons = []
-    for country_code in countries:
-        country_info = await countries_coll.find_one({"country_code": country_code})
-        if country_info and "display_name" in country_info:
+    for country_info in countries_data:
+        country_code = country_info.get("country_code")
+        if not country_code:
+            continue
+            
+        if "display_name" in country_info:
             display_name = country_info["display_name"]
             # Use detected country for flag if available
             detected_country = country_info.get("detected_country", country_code)
@@ -212,7 +402,7 @@ async def countries_keyboard(db):
 
 def number_options_keyboard(number, country_code):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Change", callback_data=f"change_{country_code}")],
+        # [InlineKeyboardButton("🔄 Change", callback_data=f"change_{country_code}")],  # TEMPORARILY SUSPENDED
         [InlineKeyboardButton("📩 Show SMS", callback_data=f"sms_{number}")],
         [InlineKeyboardButton("📋 Menu", callback_data="menu")]
     ])
@@ -344,9 +534,9 @@ async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("❌ Error checking channel membership. Please try again.", show_alert=True)
 
 async def create_user_cache(user_id, user_data):
-    """Create a cache file for verified user"""
+    """Create a cache file for verified user using config directory"""
     try:
-        cache_dir = "user_cache"
+        cache_dir = USER_CACHE_DIR
         if not os.path.exists(cache_dir):
             os.makedirs(cache_dir)
         
@@ -373,14 +563,14 @@ async def is_user_verified(user_id, context):
     try:
         # First check database
         db = context.bot_data.get("db")
-        if db:
+        if db is not None:
             users_coll = db[USERS_COLLECTION]
             user = await users_coll.find_one({"user_id": user_id})
             if user:
                 return True
         
         # Then check cache file
-        cache_file = os.path.join("user_cache", f"user_{user_id}.json")
+        cache_file = os.path.join(USER_CACHE_DIR, f"user_{user_id}.json")
         if os.path.exists(cache_file):
             return True
         
@@ -408,20 +598,56 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     coll = db[COLLECTION_NAME]
     countries_coll = db[COUNTRIES_COLLECTION]
 
-    country_info = await countries_coll.find_one({"country_code": country_code})
-    country_name = country_info["display_name"] if country_info else country_code
-
-    # Get a random number from the available numbers for this country (number stays in database for reuse)
-    pipeline = [
-        {"$match": {"country_code": country_code}},
-        {"$sample": {"size": 1}}
-    ]
-    results = await coll.aggregate(pipeline).to_list(length=1)
-    result = results[0] if results else None
+    # PERFORMANCE OPTIMIZATION: Try simple approach first for speed
+    try:
+        # Fast path: Simple random selection without lookup
+        simple_pipeline = [
+            {"$match": {"country_code": country_code}},
+            {"$sample": {"size": 1}}
+        ]
+        results = await coll.aggregate(simple_pipeline).to_list(length=1)
+        result = results[0] if results else None
+        
+        if result:
+            # Get country name from cache or quick lookup
+            country_name = country_code  # Default fallback
+            global countries_cache
+            if countries_cache:
+                for country_info in countries_cache:
+                    if country_info.get("country_code") == country_code:
+                        country_name = country_info.get("display_name", country_code)
+                        break
+            else:
+                # Quick individual lookup if cache not available
+                country_info = await countries_coll.find_one({"country_code": country_code}, {"display_name": 1})
+                if country_info:
+                    country_name = country_info.get("display_name", country_code)
+        
+    except Exception as e:
+        logging.warning(f"Fast path failed, using full pipeline: {e}")
+        
+        # Fallback: Full aggregation pipeline with lookup
+        pipeline = [
+            {"$match": {"country_code": country_code}},
+            {"$sample": {"size": 1}},
+            {"$lookup": {
+                "from": COUNTRIES_COLLECTION,
+                "localField": "country_code", 
+                "foreignField": "country_code",
+                "as": "country_info"
+            }},
+            {"$addFields": {
+                "country_name": {"$ifNull": [{"$arrayElemAt": ["$country_info.display_name", 0]}, country_code]}
+            }}
+        ]
+        results = await coll.aggregate(pipeline).to_list(length=1)
+        result = results[0] if results else None
+        country_name = result.get("country_name", country_code) if result else country_code
     
     if result and "number" in result:
         number = result["number"]
         formatted_number = format_number_display(number)
+        # country_name is already set above in the fast path or fallback
         
         # Track current number for this user
         user_id = query.from_user.id
@@ -432,22 +658,13 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         detected_country = result.get("detected_country", country_code)
         flag = get_country_flag(detected_country)
         
-        # Check for latest SMS and OTP
-        sms_info = await get_latest_sms_for_number(number)
-        
+        # PERFORMANCE OPTIMIZATION: Show number immediately, then check SMS in background
         message = (
             f"{flag} Country: {country_name}\n"
-            f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})"
+            f"📞 Number: [{formatted_number}](https://t.me/share/url?text={formatted_number})\n\n"
+            f"🔍 Checking for existing SMS...\n\n"
+            f"Select an option:"
         )
-        
-        # Add OTP if found
-        if sms_info and sms_info['otp']:
-            if sms_info['sms']['sender']:
-                message += f"\n🔐 {sms_info['sms']['sender']} : {sms_info['otp']}"
-            else:
-                message += f"\n🔐 OTP : {sms_info['otp']}"
-        
-        message += "\n\nSelect an option:"
         
         sent_message = await query.edit_message_text(
             message,
@@ -455,7 +672,7 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         
-        # Start OTP monitoring for this number
+        # Start OTP monitoring for this number (this will update the message with SMS if found)
         await start_otp_monitoring(
             number, 
             sent_message.message_id, 
@@ -466,6 +683,10 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query.from_user.id
         )
     else:
+        # Get country name for error message
+        country_info = await countries_coll.find_one({"country_code": country_code})
+        country_name = country_info["display_name"] if country_info else country_code
+        
         keyboard = await countries_keyboard(db)
         await query.edit_message_text(
             f"⚠️ No numbers available for {country_name} right now. Please try another country.",
@@ -473,6 +694,7 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # TEMPORARILY SUSPENDED - Function kept intact for future reactivation
     query = update.callback_query
     await query.answer()
     country_code = query.data.split('_', 1)[1]
@@ -614,15 +836,29 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 async def get_latest_sms_for_number(phone_number, date_str=None):
-    """Get the latest SMS for a phone number and extract OTP"""
+    """Get the latest SMS for a phone number and extract OTP - OPTIMIZED"""
     logging.info(f"Getting latest SMS for {phone_number}")
-    sms_data = await check_sms_for_number(phone_number, date_str)
+    
+    # PERFORMANCE OPTIMIZATION: Use shorter timeout for initial checks
+    import asyncio
+    try:
+        sms_data = await asyncio.wait_for(
+            check_sms_for_number(phone_number, date_str), 
+            timeout=15.0  # 15 second timeout instead of 30
+        )
+    except asyncio.TimeoutError:
+        logging.warning(f"SMS check timed out for {phone_number} - returning None")
+        return None
     
     if sms_data and 'aaData' in sms_data and sms_data['aaData']:
         logging.info(f"SMS data found for {phone_number}, processing {len(sms_data['aaData'])} rows")
+        
+        # PERFORMANCE OPTIMIZATION: Only process first few rows for initial check
+        rows_to_check = min(10, len(sms_data['aaData']))  # Limit to first 10 rows
+        
         # Filter out summary rows and get actual SMS messages
         sms_messages = []
-        for row in sms_data['aaData']:
+        for i, row in enumerate(sms_data['aaData'][:rows_to_check]):
             if isinstance(row, list) and len(row) >= 6:
                 # Check if this is a real SMS message (not a summary row)
                 first_item = str(row[0])
@@ -634,6 +870,16 @@ async def get_latest_sms_for_number(phone_number, date_str=None):
                         'sender': row[3] if len(row) > 3 else 'Unknown',
                         'message': row[5] if len(row) > 5 else 'No message content'
                     })
+                    
+                    # PERFORMANCE OPTIMIZATION: Stop after finding first valid SMS with OTP
+                    test_otp = extract_otp_from_message(sms_messages[-1]['message'])
+                    if test_otp:
+                        logging.info(f"🚀 FAST OTP DETECTED for {phone_number}: {test_otp}")
+                        return {
+                            'sms': sms_messages[-1],
+                            'otp': test_otp,
+                            'total_messages': len(sms_messages)
+                        }
         
         logging.info(f"Found {len(sms_messages)} valid SMS messages for {phone_number}")
         
@@ -760,12 +1006,13 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                     # Stop this monitoring session
                     await stop_otp_monitoring_session(session_id)
                     
-                    # Notify user
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"✅ Number {formatted_number} has been permanently deleted after receiving OTP: {current_otp}\n\n"
-                             f"🔄 Click 'Change' to get another number from the same country, or select a different country."
-                    )
+                    # Send clean OTP notification to user's private chat
+                    monitoring_user_id = active_number_monitors[session_id].get('user_id')
+                    if monitoring_user_id:
+                        await context.bot.send_message(
+                            chat_id=monitoring_user_id,  # Send to user's private chat
+                            text=f"📞 Number: {formatted_number}\n🔐 {immediate_sms_info['sms']['sender']} : {current_otp}"
+                        )
                     return  # Exit monitoring since OTP was found
                     
             except Exception as e:
@@ -831,12 +1078,13 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                                 # Stop this monitoring session
                                 await stop_otp_monitoring_session(session_id)
                                 
-                                # Notify user
-                                await context.bot.send_message(
-                                    chat_id=chat_id,
-                                    text=f"✅ Number {formatted_number} has been permanently deleted after receiving OTP: {current_otp}\n\n"
-                                         f"🔄 Click 'Change' to get another number from the same country, or select a different country."
-                                )
+                                # Send clean OTP notification to user's private chat
+                                monitoring_user_id = active_number_monitors[session_id].get('user_id')
+                                if monitoring_user_id:
+                                    await context.bot.send_message(
+                                        chat_id=monitoring_user_id,  # Send to user's private chat
+                                        text=f"📞 Number: {formatted_number}\n🔐 {sms_info['sms']['sender']} : {current_otp}"
+                                    )
                                 
                         except Exception as e:
                             logging.error(f"Failed to update message for {phone_number}: {e}")
@@ -852,14 +1100,17 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                     # Stop this monitoring session (number stays in database for reuse)
                     await stop_otp_monitoring_session(session_id)
                     
-                    # Notify user about morning call ending
+                    # Notify user about morning call ending (send to user's private chat only)
                     try:
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=f"⏰ Morning call ended for {format_number_display(phone_number)} (2 minutes timeout)\n\n"
-                                 f"🔄 This number can be given to other users again.\n"
-                                 f"📞 You can get a new number anytime!"
-                        )
+                        # Get the user ID from the monitoring session to ensure private message
+                        monitoring_user_id = active_number_monitors[session_id].get('user_id')
+                        if monitoring_user_id:
+                            await context.bot.send_message(
+                                chat_id=monitoring_user_id,  # Send to user's private chat, not group/channel
+                                text=f"⏰ Morning call ended for {format_number_display(phone_number)} (2 minutes timeout)\n\n"
+                                     f"🔄 This number can be given to other users again.\n"
+                                     f"📞 You can get a new number anytime!"
+                            )
                     except Exception as e:
                         logging.error(f"Failed to send morning call timeout message for {phone_number}: {e}")
                     
@@ -999,11 +1250,11 @@ async def check_sms_for_number(phone_number, date_str=None):
         'Referer': f'{SMS_API_BASE_URL}/ints/agent/SMSCDRReports',
         'Accept-Encoding': 'gzip, deflate',
         'Accept-Language': 'en-US,en;q=0.9,ks-IN;q=0.8,ks;q=0.7',
-        'Cookie': SMS_API_COOKIE
+                    'Cookie': get_current_sms_cookie()
     }
     
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             url = f"{SMS_API_BASE_URL}{SMS_API_ENDPOINT}"
             logging.info(f"Making API request to: {url}")
             logging.info(f"With params: {params}")
@@ -1022,8 +1273,20 @@ async def check_sms_for_number(phone_number, date_str=None):
                     # Check if we got redirected to login page
                     if 'login' in response_text.lower() or 'msi sms | login' in response_text.lower():
                         logging.error(f"❌ SMS API session expired - redirected to login page")
-                        logging.error(f"🔑 Need to update SMS_API_COOKIE with fresh session")
-                        return None
+                        logging.error(f"🔑 Current session: {get_current_sms_cookie()[:20]}...{get_current_sms_cookie()[-10:]}")
+                        
+                        # Try to reload session from config file
+                        logging.info(f"🔄 Attempting to reload session from config file...")
+                        if reload_config_session():
+                            logging.info(f"✅ Session reloaded, retrying API call...")
+                            # Notify admins of successful auto-recovery
+                            asyncio.create_task(notify_admins_api_recovery())
+                            # Don't return None, let it try again with new session
+                        else:
+                            logging.error(f"❌ Config reload failed - need manual session update")
+                            # Notify admins of API failure
+                            asyncio.create_task(notify_admins_api_failure("session_expired"))
+                            return None
                     
                     # Always try to parse as JSON regardless of content type
                     try:
@@ -1052,9 +1315,20 @@ async def check_sms_for_number(phone_number, date_str=None):
                 else:
                     response_text = await response.text()
                     logging.error(f"SMS API error: {response.status}, Response: {response_text}")
+                    
+                    # Check if it's an access blocked error
+                    if 'direct script access not allowed' in response_text.lower():
+                        asyncio.create_task(notify_admins_api_failure("access_blocked"))
+                    else:
+                        asyncio.create_task(notify_admins_api_failure(f"HTTP {response.status}"))
                     return None
+    except asyncio.TimeoutError:
+        logging.error(f"SMS API timeout")
+        asyncio.create_task(notify_admins_api_failure("connection_timeout"))
+        return None
     except Exception as e:
         logging.error(f"Error checking SMS: {e}")
+        asyncio.create_task(notify_admins_api_failure(f"connection_error: {str(e)}"))
         return None
 
 async def show_sms(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1111,7 +1385,7 @@ async def delete_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info(f"Delete country command called by user {user_id}")
     
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to delete numbers.")
+        await send_lol_message(update)
         return
 
     args = context.args
@@ -1167,95 +1441,164 @@ async def delete_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Deleted {result.deleted_count} numbers for {flag} {display_name} (`{country_code}`)."
     )
 
-async def delete_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Delete a specific phone number"""
+async def check_api_connection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check SMS API connection status"""
     user_id = update.effective_user.id
-    logging.info(f"Delete number command called by user {user_id}")
+    logging.info(f"Check API connection command called by user {user_id}")
     
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to delete numbers.")
+        await send_lol_message(update)
         return
 
-    args = context.args
-    if not args:
-        # Show some example numbers from database
-        db = context.bot_data["db"]
-        coll = db[COLLECTION_NAME]
-        
-        # Get a few sample numbers
-        sample_numbers = await coll.find({}).limit(5).to_list(length=5)
-        
-        if sample_numbers:
-            message_lines = ["📱 Available numbers to delete (examples):"]
-            for num_data in sample_numbers:
-                flag = get_country_flag(num_data.get("detected_country", num_data["country_code"]))
-                formatted_num = format_number_display(num_data["number"])
-                country_code = num_data["country_code"]
-                message_lines.append(f"{flag} {formatted_num} ({country_code})")
-            
-            message_lines.append("\nUsage: /deletenum <phone_number>")
-            message_lines.append("Example: /deletenum +966501234567")
-            message_lines.append("Note: You can use with or without + prefix")
-        else:
-            message_lines = [
-                "📭 No numbers found in database.",
-                "Usage: /deletenum <phone_number>",
-                "Example: /deletenum +966501234567"
-            ]
-        
-        await update.message.reply_text("\n".join(message_lines))
-        return
+    await update.message.reply_text("🔍 Checking SMS API connection...")
 
-    phone_number = args[0]
-    cleaned_number = clean_number(phone_number)
-    
-    db = context.bot_data["db"]
-    coll = db[COLLECTION_NAME]
-
-    # Try to find the number with different formats
-    result = None
-    
-    # Try exact match first
-    result = await coll.find_one_and_delete({"number": cleaned_number})
-    
-    # If not found, try with + prefix
-    if not result and not cleaned_number.startswith("+"):
-        result = await coll.find_one_and_delete({"number": f"+{cleaned_number}"})
-    
-    # If not found, try without + prefix
-    if not result and cleaned_number.startswith("+"):
-        result = await coll.find_one_and_delete({"number": cleaned_number[1:]})
-    
-    # If still not found, try original_number field
-    if not result:
-        result = await coll.find_one_and_delete({"original_number": phone_number})
-    
-    if result:
-        country_code = result.get("country_code", "unknown")
-        flag = get_country_flag(result.get("detected_country", country_code))
-        formatted_number = format_number_display(result["number"])
+    try:
+        # Test the SMS API connection
+        url = f"{SMS_API_BASE_URL}{SMS_API_ENDPOINT}"
         
-        await update.message.reply_text(
-            f"✅ Deleted number: {flag} {formatted_number} (Country: {country_code})"
-        )
+        # Use minimal params for connection test
+        from datetime import datetime, timedelta
+        import pytz
+        timezone = pytz.timezone(TIMEZONE_NAME)
+        now = datetime.now(timezone)
+        yesterday = now - timedelta(hours=24)
+        date_str = yesterday.strftime("%Y-%m-%d")
         
-        # Update country count
-        countries_coll = db[COUNTRIES_COLLECTION]
-        await countries_coll.update_one(
-            {"country_code": country_code},
-            {"$inc": {"number_count": -1}}
-        )
-    else:
+        params = {
+            'fdate1': f"{date_str} 00:00:00",
+            'fdate2': f"{now.strftime('%Y-%m-%d %H:%M:%S')}",
+            'fnum': '000000000',  # Dummy number for connection test
+            'iDisplayLength': '1',  # Minimal data
+            'sSortDir_0': 'desc',
+            '_': str(int(datetime.now().timestamp() * 1000))
+        }
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36',
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': f'{SMS_API_BASE_URL}/ints/agent/SMSCDRReports',
+            'Accept-Encoding': 'gzip, deflate',
+            'Accept-Language': 'en-US,en;q=0.9,ks-IN;q=0.8,ks;q=0.7',
+            'Cookie': get_current_sms_cookie()
+        }
+        
+        import time
+        start_time = time.time()
+        
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(url, params=params, headers=headers) as response:
+                response_time = round((time.time() - start_time) * 1000, 2)
+                
+                status_emoji = "✅" if response.status == 200 else "❌"
+                status_text = "Connected" if response.status == 200 else f"Error {response.status}"
+                
+                # Check response content
+                response_text = await response.text()
+                content_type = response.headers.get('content-type', 'unknown')
+                
+                # Detect common issues
+                issues = []
+                warnings = []
+                
+                if 'login' in response_text.lower():
+                    issues.append("❌ Session expired - redirected to login")
+                elif 'direct script access not allowed' in response_text.lower():
+                    issues.append("❌ Direct script access blocked")
+                elif response.status != 200:
+                    issues.append(f"❌ HTTP Error: {response.status}")
+                elif not response_text.strip().startswith('{'):
+                    issues.append("❌ Non-JSON response received")
+                
+                # Check for warnings (non-critical issues)
+                if 'application/json' not in content_type and response_text.strip().startswith('{'):
+                    warnings.append("⚠️ JSON response with HTML content-type (common, not critical)")
+                
+                # Try to parse JSON
+                json_valid = False
+                try:
+                    import json
+                    data = json.loads(response_text)
+                    json_valid = True
+                    record_count = data.get('iTotalRecords', 'unknown')
+                except:
+                    record_count = 'invalid'
+                
+                # Build status message
+                message_lines = [
+                    f"🌐 **SMS API Connection Status**",
+                    f"",
+                    f"{status_emoji} **Status**: {status_text}",
+                    f"⏱️ **Response Time**: {response_time}ms",
+                    f"📡 **Endpoint**: {SMS_API_BASE_URL}",
+                    f"🔧 **Content-Type**: {content_type}",
+                    f"📊 **JSON Valid**: {'✅ Yes' if json_valid else '❌ No'}",
+                    f"📈 **Test Query Records**: {record_count}",
+                    f"🍪 **Cookie**: {get_current_sms_cookie()[:20]}...{get_current_sms_cookie()[-10:]}",
+                ]
+                
+                # Add issues section
+                if issues:
+                    message_lines.extend([
+                        f"",
+                        f"🚨 **Critical Issues Detected**:"
+                    ])
+                    message_lines.extend(issues)
+                
+                # Add warnings section
+                if warnings:
+                    message_lines.extend([
+                        f"",
+                        f"⚠️ **Warnings** (non-critical):"
+                    ])
+                    message_lines.extend(warnings)
+                
+                # Add final status
+                if not issues:
+                    message_lines.extend([
+                        f"",
+                        f"✅ **API Connection Healthy!**",
+                        f"🎯 **Ready for OTP detection**"
+                    ])
+                else:
+                    message_lines.extend([
+                        f"",
+                        f"❌ **API has critical issues**",
+                        f"🔧 **Action required to fix OTP detection**"
+                    ])
+                
+                message_lines.extend([
+                    f"",
+                    f"_Test performed at {now.strftime('%Y-%m-%d %H:%M:%S')}_"
+                ])
+                
+                await update.message.reply_text(
+                    "\n".join(message_lines),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                
+    except asyncio.TimeoutError:
         await update.message.reply_text(
-            f"❌ Number '{phone_number}' not found in database.\n"
-            "Try using the exact format as stored in the database."
+            "❌ **SMS API Connection Failed**\n\n"
+            "⏱️ **Error**: Connection timeout (>10 seconds)\n"
+            "🔧 **Suggestion**: Check SMS API server status\n\n"
+            f"📡 **Endpoint**: {SMS_API_BASE_URL}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ **SMS API Connection Failed**\n\n"
+            f"🚫 **Error**: {str(e)}\n"
+            f"🔧 **Suggestion**: Check network connection and API settings\n\n"
+            f"📡 **Endpoint**: {SMS_API_BASE_URL}",
+            parse_mode=ParseMode.MARKDOWN
         )
 
 async def delete_all_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Delete all numbers from database"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to delete numbers.")
+        await send_lol_message(update)
         return
 
     # Ask for confirmation
@@ -1287,7 +1630,7 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show database statistics"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to view stats.")
+        await send_lol_message(update)
         return
 
     db = context.bot_data["db"]
@@ -1320,7 +1663,7 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Add command to enter numbers manually and upload CSV"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        await send_lol_message(update)
         return
 
     # Initialize user state
@@ -1334,8 +1677,10 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "94741854027\n"
         "94775995195\n"
         "94743123866\n\n"
-        "Send 'done' when you're finished entering numbers.\n"
-        "Send 'cancel' to cancel the operation.",
+        "💡 **Options:**\n"
+        "• Send 'done' when finished entering numbers manually\n"
+        "• Upload a CSV file (will skip to country name step)\n"
+        "• Send 'cancel' to cancel the operation",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -1343,6 +1688,7 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Test command for debugging"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
         return
     
     args = context.args
@@ -1380,6 +1726,7 @@ async def cleanup_used_numbers(update: Update, context: ContextTypes.DEFAULT_TYP
     """Clean up numbers that have received OTPs"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
         return
     
     await update.message.reply_text("🧹 Starting cleanup of numbers with OTPs...")
@@ -1426,6 +1773,7 @@ async def force_otp_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Force OTP check for a specific number"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
         return
     
     args = context.args
@@ -1454,6 +1802,7 @@ async def check_monitoring_status(update: Update, context: ContextTypes.DEFAULT_
     """Check current OTP monitoring status"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
         return
     
     if active_number_monitors:
@@ -1472,6 +1821,7 @@ async def check_country_numbers(update: Update, context: ContextTypes.DEFAULT_TY
     """Check how many numbers are available for each country"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
         return
     
     db = context.bot_data["db"]
@@ -1526,33 +1876,207 @@ async def update_sms_session(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Update SMS API session cookie"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
         return
     
     args = context.args
     if not args:
         await update.message.reply_text(
-            "🔑 SMS API Session Update\n\n"
-            "Usage: /updatesms <new_session_cookie>\n\n"
-            "Example: /updatesms PHPSESSID=abc123def456\n\n"
-            "⚠️ Current session appears to be expired.\n"
-            "🔍 Get fresh session from your SMS panel."
+            "🔑 **SMS API Session Update**\n\n"
+            "**Usage:** `/updatesms <new_session_cookie>`\n\n"
+            "**Example:** `/updatesms PHPSESSID=abc123def456`\n\n"
+            "**How to get new session:**\n"
+            "1. Login to SMS panel in browser\n"
+            "2. Open Developer Tools (F12)\n"
+            "3. Go to Network tab\n"
+            "4. Refresh page\n"
+            "5. Find request to data_smscdr.php\n"
+            "6. Copy Cookie header value\n\n"
+            f"**Current session:** `{get_current_sms_cookie()[:20]}...{get_current_sms_cookie()[-10:]}`",
+            parse_mode=ParseMode.MARKDOWN
         )
         return
     
-    new_cookie = args[0]
+    new_cookie = " ".join(args)  # Join all args in case cookie has spaces
     if not new_cookie.startswith("PHPSESSID="):
         await update.message.reply_text("❌ Invalid session cookie format. Must start with 'PHPSESSID='")
         return
     
-    # Update the global variable
-    global SMS_API_COOKIE
-    SMS_API_COOKIE = new_cookie
+    await update.message.reply_text("🔄 Testing new session...")
     
-    await update.message.reply_text(
-        f"✅ SMS API session updated!\n\n"
-        f"🔑 New cookie: {new_cookie}\n\n"
-        f"🔄 Restart the bot to apply changes."
-    )
+    # Test the new session before applying
+    try:
+        url = f"{SMS_API_BASE_URL}{SMS_API_ENDPOINT}"
+        
+        from datetime import datetime, timedelta
+        import pytz
+        timezone = pytz.timezone(TIMEZONE_NAME)
+        now = datetime.now(timezone)
+        yesterday = now - timedelta(hours=24)
+        date_str = yesterday.strftime("%Y-%m-%d")
+        
+        params = {
+            'fdate1': f"{date_str} 00:00:00",
+            'fdate2': f"{now.strftime('%Y-%m-%d %H:%M:%S')}",
+            'fnum': '000000000',
+            'iDisplayLength': '1',
+            'sSortDir_0': 'desc',
+            '_': str(int(datetime.now().timestamp() * 1000))
+        }
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36',
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': f'{SMS_API_BASE_URL}/ints/agent/SMSCDRReports',
+            'Accept-Encoding': 'gzip, deflate',
+            'Accept-Language': 'en-US,en;q=0.9,ks-IN;q=0.8,ks;q=0.7',
+            'Cookie': new_cookie  # Test with new cookie
+        }
+        
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(url, params=params, headers=headers) as response:
+                response_text = await response.text()
+                
+                # Check if new session works
+                if response.status == 200 and response_text.strip().startswith('{'):
+                    try:
+                        import json
+                        json.loads(response_text)  # Validate JSON
+                        
+                        # Session test passed, update both runtime and config
+                        old_cookie = get_current_sms_cookie()
+                        
+                        # Update runtime session (immediate effect)
+                        update_runtime_session(new_cookie)
+                        
+                        # Update config file (for bot restart persistence) 
+                        config_updated = "✅ Config file updated" if update_config_file_session(new_cookie) else "⚠️ Config file update failed"
+                        
+                        await update.message.reply_text(
+                            f"✅ **SMS API Session Updated Successfully!**\n\n"
+                            f"🔑 **New session:** `{new_cookie[:20]}...{new_cookie[-10:]}`\n"
+                            f"🔑 **Old session:** `{old_cookie[:20]}...{old_cookie[-10:]}`\n\n"
+                            f"🔄 **Status:** Active immediately (no restart needed)\n"
+                            f"📁 **Config:** {config_updated}\n"
+                            f"🎯 **API:** Ready for OTP detection\n\n"
+                            f"_Session updated at {now.strftime('%Y-%m-%d %H:%M:%S')}_",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        
+                    except:
+                        await update.message.reply_text("❌ New session returns invalid JSON response")
+                        
+                elif 'login' in response_text.lower():
+                    await update.message.reply_text("❌ New session is invalid - redirected to login")
+                elif 'direct script access not allowed' in response_text.lower():
+                    await update.message.reply_text("❌ New session blocked - direct script access not allowed")
+                else:
+                    await update.message.reply_text(f"❌ New session test failed - HTTP {response.status}")
+                    
+    except Exception as e:
+        await update.message.reply_text(f"❌ Session test failed: {str(e)}")
+
+async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show all admin commands with examples"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
+        return
+    
+    admin_commands = """
+🔧 **ADMIN COMMAND CENTER**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**📊 DATABASE MANAGEMENT:**
+1️⃣ `/stats` - View database statistics
+2️⃣ `/listnumbers` - List all numbers by country
+3️⃣ `/listnumbers Pakistan` - List numbers for specific country
+4️⃣ `/deletecountry Pakistan` - Delete all numbers from a country
+5️⃣ `/deleteall` - Delete all numbers (with confirmation)
+
+**📱 NUMBER MANAGEMENT:**
+6️⃣ `/add` - Add numbers manually + CSV upload
+7️⃣ `/upload` - Upload CSV file directly
+8️⃣ `/save` - Save uploaded CSV to database
+9️⃣ `/cleanup` - Clean numbers that have received OTPs
+
+**🔍 MONITORING & TESTING:**
+🔟 `/monitoring` - Check active OTP monitoring status
+1️⃣1️⃣ `/test` - Debug command for testing features
+1️⃣2️⃣ `/forceotp +923066082919` - **Force OTP check for specific number**
+1️⃣3️⃣ `/countrynumbers` - Check available numbers per country
+
+**🌐 API & SESSION MANAGEMENT:**
+1️⃣4️⃣ `/checkapi` - Test SMS API connection status
+1️⃣5️⃣ `/updatesms PHPSESSID=abc123def456` - Update SMS session cookie
+1️⃣6️⃣ `/reloadsession` - Reload session from config.py file
+1️⃣7️⃣ `/clearcache` - Clear countries cache for performance
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 **QUICK EXAMPLES:**
+
+• **Add Numbers**: `/add` → Manual entry + CSV upload
+• **Check API**: `/checkapi` → Test connection health
+• **Update Session**: `/updatesms PHPSESSID=new_session_here`
+• **Force Check**: `/forceotp +923066082919` ← **Example #12**
+• **View Stats**: `/stats` → Database overview
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚡ **POWER USER TIPS:**
+
+🔄 **Session Management**: Use `/checkapi` first, then `/updatesms` if needed
+📊 **Database Health**: Run `/stats` and `/countrynumbers` regularly  
+🧹 **Maintenance**: Use `/cleanup` weekly to remove used numbers
+🔍 **Debugging**: `/test` + `/forceotp` for troubleshooting
+📱 **Bulk Operations**: `/add` for manual + CSV combined workflow
+
+🎯 **Admin ID**: `{user_id}`
+📍 **Status**: Full administrative access granted
+"""
+    
+    await update.message.reply_text(admin_commands, parse_mode=ParseMode.MARKDOWN)
+
+async def clear_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear countries cache to force refresh"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
+        return
+    
+    clear_countries_cache()
+    await update.message.reply_text("✅ Countries cache cleared. Next country list will be refreshed from database.")
+
+async def reload_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reload SMS API session from config file"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
+        return
+    
+    await update.message.reply_text("🔄 Reloading session from config file...")
+    
+    old_session = get_current_sms_cookie()
+    session_changed = reload_config_session()
+    new_session = get_current_sms_cookie()
+    
+    if session_changed:
+        await update.message.reply_text(
+            f"✅ **Session Reloaded from Config File**\n\n"
+            f"🔑 **Old session:** `{old_session[:20]}...{old_session[-10:]}`\n"
+            f"🔑 **New session:** `{new_session[:20]}...{new_session[-10:]}`\n\n"
+            f"🔄 **Status:** Active immediately\n"
+            f"📁 **Source:** config.py file\n\n"
+            f"💡 **Tip:** Use `/checkapi` to verify connection",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        await update.message.reply_text(
+            f"ℹ️ **No Session Change**\n\n"
+            f"🔑 **Current session:** `{new_session[:20]}...{new_session[-10:]}`\n\n"
+            f"✅ Session is already up to date with config file",
+            parse_mode=ParseMode.MARKDOWN
+        )
 
 async def reset_current_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reset current number tracking for debugging"""
@@ -1573,7 +2097,7 @@ async def list_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info(f"List numbers command called by user {user_id}")
     
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to view numbers.")
+        await send_lol_message(update)
         return
 
     args = context.args
@@ -1669,7 +2193,7 @@ async def upload_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global uploaded_csv
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to upload files.")
+        await send_lol_message(update)
         return
 
     if not update.message.document:
@@ -1689,9 +2213,9 @@ async def upload_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_bytes.seek(0)
     uploaded_csv = file_bytes
 
-    # Check if user is in add command flow
-    if user_id in user_states and user_states[user_id] == "waiting_for_csv":
-        # User is in /add command flow, ask for name
+    # Check if user is in add command flow (either waiting for manual numbers or CSV)
+    if user_id in user_states and user_states[user_id] in ["waiting_for_csv", "waiting_for_manual_numbers"]:
+        # User is in /add command flow, ask for name immediately (skip "done" step)
         user_states[user_id] = "waiting_for_name"
         await update.message.reply_text(
             "🌍 Please enter the name for all the numbers (manual + CSV):\n"
@@ -1708,120 +2232,24 @@ async def upload_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def addlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Process CSV file by asking for country name directly"""
     global uploaded_csv
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to perform this command.")
+        await send_lol_message(update)
         return
 
     if not uploaded_csv:
         await update.message.reply_text("❌ No CSV file found. Please upload the file first.")
         return
 
-    await update.message.reply_text("🔍 Analyzing and processing numbers...")
-
-    db = context.bot_data["db"]
-    coll = db[COLLECTION_NAME]
-    countries_coll = db[COUNTRIES_COLLECTION]
-
-    # Process CSV file
-    numbers, process_msg = await process_csv_file(uploaded_csv)
-    if not numbers:
-        await update.message.reply_text(f"❌ {process_msg}")
-        return
-
-    # Upload to database
-    inserted_count = 0
-    country_stats = {}
-    number_details = []
-
-    for num_data in numbers:
-        try:
-            # Insert number
-            await coll.insert_one({
-                "country_code": num_data['country_code'],
-                "number": num_data['number'],
-                "original_number": num_data['original_number'],
-                "range": num_data['range'],
-                "added_at": datetime.now(TIMEZONE)
-            })
-            
-            # Update statistics
-            if num_data['country_code'] not in country_stats:
-                country_stats[num_data['country_code']] = 0
-            country_stats[num_data['country_code']] += 1
-            inserted_count += 1
-            
-            # Get country info
-            country = pycountry.countries.get(alpha_2=num_data['country_code'].upper())
-            country_name = country.name if country else num_data['country_code']
-            flag = get_country_flag(num_data['country_code'])
-            
-            number_details.append(f"{flag} {num_data['number']} - {country_name}")
-        except Exception as e:
-            logging.error(f"Error inserting number: {e}")
-            continue
-
-    # Update countries collection
-    for country_code, count in country_stats.items():
-        country = pycountry.countries.get(alpha_2=country_code.upper())
-        display_name = country.name if country else country_code
-        
-        await countries_coll.update_one(
-            {"country_code": country_code},
-            {"$set": {
-                "country_code": country_code,
-                "display_name": display_name,
-                "last_updated": datetime.now(TIMEZONE),
-                "number_count": count
-            }},
-            upsert=True
-        )
-
-    uploaded_csv = None
-
-    # Prepare report
-    report_lines = [
-        "📊 Upload Report:",
-        f"✅ Successfully uploaded {inserted_count} numbers",
-        "",
-        "🌍 Countries detected:"
-    ]
-
-    # Add country statistics
-    for country_code, count in country_stats.items():
-        country_info = await countries_coll.find_one({"country_code": country_code})
-        country_name = country_info["display_name"] if country_info else country_code
-        flag = get_country_flag(country_code)
-        report_lines.append(f"{flag} {country_name}: {count} numbers")
-
-    # Add sample numbers (first 10)
-    report_lines.extend([
-        "",
-        "📋 Sample numbers:",
-        *number_details[:10]
-    ])
-
-    if len(number_details) > 10:
-        report_lines.append(f"\n... and {len(number_details) - 10} more numbers")
-
-    # Send report
-    await update.message.reply_text("\n".join(report_lines))
-
-    # Send complete list as file if many numbers
-    if len(number_details) > 10:
-        report_file = BytesIO()
-        report_file.write("\n".join([
-            "Number,Country,Country Code",
-            *[f"{num.split(' - ')[0]},{num.split(' - ')[1]},{num_data['country_code']}" 
-              for num, num_data in zip(number_details, numbers)]
-        ]).encode('utf-8'))
-        report_file.seek(0)
-        await update.message.reply_document(
-            document=report_file,
-            filename="number_upload_report.csv",
-            caption="📄 Complete number upload report"
-        )
+    # Set user state to ask for country name directly
+    user_states[user_id] = "waiting_for_country"
+    await update.message.reply_text(
+        "🌍 Please enter the country name for the numbers in the CSV file:\n"
+        "Examples: Sri Lanka Ws, Sri Lanka Tg, India, Saudi Arabia, USA, etc.\n"
+        "You can use custom names like 'India Ws' for WhatsApp numbers or 'India Tg' for Telegram numbers."
+    )
 
 async def process_all_numbers_with_country(update: Update, context: ContextTypes.DEFAULT_TYPE, country_name):
     """Process both manual numbers and CSV file with the provided country name"""
@@ -2127,6 +2555,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
     
     if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
         return
     
     if user_id in user_states:
@@ -2215,9 +2644,176 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             country_name = text
             await process_all_numbers_with_country(update, context, country_name)
 
+async def background_otp_cleanup_task(app):
+    """Background task that runs every minute to check all numbers for OTPs and clean them"""
+    logging.info("🔄 Background OTP cleanup task started - checking every minute")
+    
+    # Wait for bot to fully initialize
+    await asyncio.sleep(10)
+    
+    while True:
+        try:
+            await asyncio.sleep(60)  # Wait 1 minute
+            
+            logging.info("🔍 Starting background OTP cleanup check...")
+            
+            # Get database connection
+            if "db" not in app.bot_data:
+                logging.error("❌ Database not available for background cleanup")
+                continue
+                
+            db = app.bot_data["db"]
+            coll = db[COLLECTION_NAME]
+            countries_coll = db[COUNTRIES_COLLECTION]
+            
+            # Get all numbers from database
+            all_numbers = await coll.find({}).to_list(length=None)
+            
+            if not all_numbers:
+                logging.info("ℹ️ No numbers in database to check")
+                continue
+                
+            logging.info(f"🔍 Checking {len(all_numbers)} numbers for OTPs...")
+            
+            cleaned_count = 0
+            skipped_count = 0
+            
+            for number_doc in all_numbers:
+                try:
+                    phone_number = str(number_doc.get('number', ''))
+                    country_code = number_doc.get('country_code', '')
+                    
+                    if not phone_number:
+                        continue
+                    
+                    # Skip numbers that have active monitoring sessions
+                    has_active_session = False
+                    for session_id, session_data in active_number_monitors.items():
+                        if session_data.get('phone_number') == phone_number and not session_data.get('stop', True):
+                            has_active_session = True
+                            logging.info(f"⏭️ Background cleanup: Skipping {phone_number} - has active monitoring session {session_id}")
+                            break
+                    
+                    if has_active_session:
+                        skipped_count += 1
+                        continue  # Skip this number, let real-time monitoring handle it
+                    
+                    # Check if this number has received an OTP
+                    sms_info = await get_latest_sms_for_number(phone_number)
+                    
+                    if sms_info and sms_info.get('otp'):
+                        otp = sms_info['otp']
+                        sender = sms_info['sms'].get('sender', 'Unknown')
+                        
+                        logging.info(f"🎯 Background cleanup: Found OTP for {phone_number} - {sender}: {otp}")
+                        
+                        # Delete the number from database
+                        delete_result = await coll.delete_one({"number": phone_number})
+                        
+                        if delete_result.deleted_count > 0:
+                            # Update country count
+                            if country_code:
+                                await countries_coll.update_one(
+                                    {"country_code": country_code},
+                                    {"$inc": {"number_count": -1}}
+                                )
+                            
+                            cleaned_count += 1
+                            formatted_number = format_number_display(phone_number)
+                            
+                            logging.info(f"🗑️ Background cleanup: Deleted {phone_number} after detecting OTP: {otp}")
+                            
+                            # Send OTP notification to any users who had this number
+                            users_notified = 0
+                            for user_id, user_sessions in user_monitoring_sessions.items():
+                                for session_id, session_data in user_sessions.items():
+                                    if session_data.get('phone_number') == phone_number:
+                                        try:
+                                            await app.bot.send_message(
+                                                chat_id=user_id,
+                                                text=f"📞 Number: {formatted_number}\n🔐 {sender} : {otp}"
+                                            )
+                                            users_notified += 1
+                                            logging.info(f"📱 Background cleanup: Sent OTP notification to user {user_id}")
+                                        except Exception as notify_error:
+                                            logging.error(f"Failed to notify user {user_id}: {notify_error}")
+                                        break  # Only notify each user once
+                            
+                            # Stop any active monitoring sessions for this number
+                            sessions_stopped = 0
+                            sessions_to_remove = []
+                            
+                            for session_id, session_data in active_number_monitors.items():
+                                if session_data.get('phone_number') == phone_number:
+                                    logging.info(f"🛑 Background cleanup: Stopping monitoring session {session_id} for {phone_number}")
+                                    session_data['stop'] = True
+                                    sessions_to_remove.append(session_id)
+                                    sessions_stopped += 1
+                            
+                            # Remove stopped sessions from active monitors
+                            for session_id in sessions_to_remove:
+                                if session_id in active_number_monitors:
+                                    del active_number_monitors[session_id]
+                            
+                            # Also clean up user monitoring sessions
+                            for user_id, user_sessions in user_monitoring_sessions.items():
+                                user_sessions_to_remove = []
+                                for session_id, session_data in user_sessions.items():
+                                    if session_data.get('phone_number') == phone_number:
+                                        logging.info(f"🛑 Background cleanup: Removing user session {session_id} for user {user_id}")
+                                        user_sessions_to_remove.append(session_id)
+                                
+                                # Remove user sessions
+                                for session_id in user_sessions_to_remove:
+                                    if session_id in user_sessions:
+                                        del user_sessions[session_id]
+                            
+                            # Send notification to all admins about the cleanup
+                            for admin_id in ADMIN_IDS:
+                                try:
+                                    session_info = f"\n🛑 Stopped {sessions_stopped} monitoring session(s)" if sessions_stopped > 0 else ""
+                                    user_info = f"\n📱 Notified {users_notified} user(s)" if users_notified > 0 else ""
+                                    await app.bot.send_message(
+                                        chat_id=admin_id,
+                                        text=f"🔄 **Background Cleanup**\n\n"
+                                             f"📞 Number: {formatted_number}\n"
+                                             f"🔐 {sender} : {otp}\n"
+                                             f"🗑️ Auto-deleted from server{session_info}{user_info}\n\n"
+                                             f"ℹ️ _Background cleanup at {datetime.now(TIMEZONE).strftime('%H:%M:%S')}_",
+                                        parse_mode=ParseMode.MARKDOWN
+                                    )
+                                except Exception as notify_error:
+                                    logging.error(f"Failed to notify admin {admin_id}: {notify_error}")
+                        
+                        # Small delay between number checks to avoid overwhelming the API
+                        await asyncio.sleep(1)
+                        
+                except Exception as number_error:
+                    logging.error(f"Error checking number {phone_number}: {number_error}")
+                    continue
+            
+            if cleaned_count > 0:
+                logging.info(f"✅ Background cleanup completed: {cleaned_count} numbers cleaned, {skipped_count} numbers skipped (active sessions)")
+            else:
+                skip_info = f", {skipped_count} numbers skipped (active sessions)" if skipped_count > 0 else ""
+                logging.info(f"ℹ️ Background cleanup completed: No numbers with OTPs found{skip_info}")
+                
+        except Exception as e:
+            logging.error(f"❌ Background cleanup task error: {e}")
+            # Continue running despite errors
+            continue
+
 # === MAIN BOT SETUP ===
+async def post_init(app):
+    """Initialize background tasks after bot startup"""
+    logging.info("🔄 Starting background cleanup task...")
+    try:
+        asyncio.create_task(background_otp_cleanup_task(app))
+    except Exception as e:
+        logging.error(f"Failed to start background task: {e}")
+
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
     mongo_client = AsyncIOMotorClient(MONGO_URI)
     db = mongo_client[DB_NAME]
@@ -2228,7 +2824,7 @@ def main():
     app.add_handler(CommandHandler("test", test_command))
     app.add_handler(CommandHandler("add", add_command))
     app.add_handler(CommandHandler("delete", delete_country))
-    app.add_handler(CommandHandler("deletenum", delete_number))
+    app.add_handler(CommandHandler("checkapi", check_api_connection))
     app.add_handler(CommandHandler("deleteall", delete_all_numbers))
     app.add_handler(CommandHandler("stats", show_stats))
     app.add_handler(CommandHandler("list", list_numbers))
@@ -2240,15 +2836,18 @@ def main():
     app.add_handler(CommandHandler("resetnumber", reset_current_number))
     app.add_handler(CommandHandler("morningcalls", show_my_morning_calls))
     app.add_handler(CommandHandler("updatesms", update_sms_session))
+    app.add_handler(CommandHandler("admin", admin_help))
+    app.add_handler(CommandHandler("clearcache", clear_cache))
+    app.add_handler(CommandHandler("reloadsession", reload_session))
     app.add_handler(CallbackQueryHandler(check_join, pattern="check_join"))
     app.add_handler(CallbackQueryHandler(request_number, pattern="request_number"))
     app.add_handler(CallbackQueryHandler(send_number, pattern="^country_"))
-    app.add_handler(CallbackQueryHandler(change_number, pattern="^change_"))
+    # app.add_handler(CallbackQueryHandler(change_number, pattern="^change_"))  # TEMPORARILY SUSPENDED
     app.add_handler(CallbackQueryHandler(show_sms, pattern="^sms_"))
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(MessageHandler(filters.Document.FileExtension("csv") & filters.User(ADMIN_IDS), upload_csv))
     app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), handle_text_message))
-
+    
     logging.info("Bot started and polling...")
     app.run_polling()
 
