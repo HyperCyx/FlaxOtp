@@ -2648,75 +2648,76 @@ async def background_otp_cleanup_task(app):
     """Background task that runs every minute to check all numbers for OTPs and clean them"""
     logging.info("🔄 Background OTP cleanup task started - checking every minute")
     
-    # Wait for bot to fully initialize
-    await asyncio.sleep(10)
-    
-    while True:
-        try:
-            await asyncio.sleep(60)  # Wait 1 minute
-            
-            logging.info("🔍 Starting background OTP cleanup check...")
-            
-            # Get database connection
-            if "db" not in app.bot_data:
-                logging.error("❌ Database not available for background cleanup")
-                continue
+    try:
+        # Wait for bot to fully initialize
+        await asyncio.sleep(10)
+        
+        while True:
+            try:
+                await asyncio.sleep(60)  # Wait 1 minute
                 
-            db = app.bot_data["db"]
-            coll = db[COLLECTION_NAME]
-            countries_coll = db[COUNTRIES_COLLECTION]
-            
-            # Get all numbers from database
-            all_numbers = await coll.find({}).to_list(length=None)
-            
-            if not all_numbers:
-                logging.info("ℹ️ No numbers in database to check")
-                continue
+                logging.info("🔍 Starting background OTP cleanup check...")
                 
-            logging.info(f"🔍 Checking {len(all_numbers)} numbers for OTPs...")
+                # Get database connection
+                if "db" not in app.bot_data:
+                    logging.error("❌ Database not available for background cleanup")
+                    continue
+                    
+                db = app.bot_data["db"]
+                coll = db[COLLECTION_NAME]
+                countries_coll = db[COUNTRIES_COLLECTION]
             
-            cleaned_count = 0
-            skipped_count = 0
-            
-            for number_doc in all_numbers:
-                try:
-                    phone_number = str(number_doc.get('number', ''))
-                    country_code = number_doc.get('country_code', '')
+                # Get all numbers from database
+                all_numbers = await coll.find({}).to_list(length=None)
+                
+                if not all_numbers:
+                    logging.info("ℹ️ No numbers in database to check")
+                    continue
                     
-                    if not phone_number:
-                        continue
-                    
-                    # Skip numbers that have active monitoring sessions
-                    has_active_session = False
-                    for session_id, session_data in active_number_monitors.items():
-                        if session_data.get('phone_number') == phone_number and not session_data.get('stop', True):
-                            has_active_session = True
-                            logging.info(f"⏭️ Background cleanup: Skipping {phone_number} - has active monitoring session {session_id}")
-                            break
-                    
-                    if has_active_session:
-                        skipped_count += 1
-                        continue  # Skip this number, let real-time monitoring handle it
-                    
-                    # Check if this number has received an OTP
-                    sms_info = await get_latest_sms_for_number(phone_number)
-                    
-                    if sms_info and sms_info.get('otp'):
-                        otp = sms_info['otp']
-                        sender = sms_info['sms'].get('sender', 'Unknown')
+                logging.info(f"🔍 Checking {len(all_numbers)} numbers for OTPs...")
+                
+                cleaned_count = 0
+                skipped_count = 0
+                
+                for number_doc in all_numbers:
+                    try:
+                        phone_number = str(number_doc.get('number', ''))
+                        country_code = number_doc.get('country_code', '')
                         
-                        logging.info(f"🎯 Background cleanup: Found OTP for {phone_number} - {sender}: {otp}")
+                        if not phone_number:
+                            continue
                         
-                        # Delete the number from database
-                        delete_result = await coll.delete_one({"number": phone_number})
+                        # Skip numbers that have active monitoring sessions
+                        has_active_session = False
+                        for session_id, session_data in active_number_monitors.items():
+                            if session_data.get('phone_number') == phone_number and not session_data.get('stop', True):
+                                has_active_session = True
+                                logging.info(f"⏭️ Background cleanup: Skipping {phone_number} - has active monitoring session {session_id}")
+                                break
                         
-                        if delete_result.deleted_count > 0:
-                            # Update country count
-                            if country_code:
-                                await countries_coll.update_one(
-                                    {"country_code": country_code},
-                                    {"$inc": {"number_count": -1}}
-                                )
+                        if has_active_session:
+                            skipped_count += 1
+                            continue  # Skip this number, let real-time monitoring handle it
+                        
+                        # Check if this number has received an OTP
+                        sms_info = await get_latest_sms_for_number(phone_number)
+                        
+                        if sms_info and sms_info.get('otp'):
+                            otp = sms_info['otp']
+                            sender = sms_info['sms'].get('sender', 'Unknown')
+                            
+                            logging.info(f"🎯 Background cleanup: Found OTP for {phone_number} - {sender}: {otp}")
+                            
+                            # Delete the number from database
+                            delete_result = await coll.delete_one({"number": phone_number})
+                            
+                            if delete_result.deleted_count > 0:
+                                # Update country count
+                                if country_code:
+                                    await countries_coll.update_one(
+                                        {"country_code": country_code},
+                                        {"$inc": {"number_count": -1}}
+                                    )
                             
                             cleaned_count += 1
                             formatted_number = format_number_display(phone_number)
@@ -2788,33 +2789,46 @@ async def background_otp_cleanup_task(app):
                         # Small delay between number checks to avoid overwhelming the API
                         await asyncio.sleep(1)
                         
-                except Exception as number_error:
-                    logging.error(f"Error checking number {phone_number}: {number_error}")
-                    continue
-            
-            if cleaned_count > 0:
-                logging.info(f"✅ Background cleanup completed: {cleaned_count} numbers cleaned, {skipped_count} numbers skipped (active sessions)")
-            else:
-                skip_info = f", {skipped_count} numbers skipped (active sessions)" if skipped_count > 0 else ""
-                logging.info(f"ℹ️ Background cleanup completed: No numbers with OTPs found{skip_info}")
+                    except Exception as number_error:
+                        logging.error(f"Error checking number {phone_number}: {number_error}")
+                        continue
                 
-        except Exception as e:
-            logging.error(f"❌ Background cleanup task error: {e}")
-            # Continue running despite errors
-            continue
+                if cleaned_count > 0:
+                    logging.info(f"✅ Background cleanup completed: {cleaned_count} numbers cleaned, {skipped_count} numbers skipped (active sessions)")
+                else:
+                    skip_info = f", {skipped_count} numbers skipped (active sessions)" if skipped_count > 0 else ""
+                    logging.info(f"ℹ️ Background cleanup completed: No numbers with OTPs found{skip_info}")
+                    
+            except Exception as e:
+                logging.error(f"❌ Background cleanup task error: {e}")
+                # Continue running despite errors
+                continue
+                
+    except asyncio.CancelledError:
+        logging.info("🛑 Background cleanup task cancelled")
+    except Exception as e:
+        logging.error(f"❌ Fatal error in background cleanup task: {e}")
+    finally:
+        logging.info("🔄 Background cleanup task finished")
 
 # === MAIN BOT SETUP ===
 async def post_init(app):
     """Initialize background tasks after bot startup"""
     logging.info("🔄 Starting background cleanup task...")
     try:
-        asyncio.create_task(background_otp_cleanup_task(app))
+        # Store the task reference in app.bot_data for cleanup later
+        cleanup_task = asyncio.create_task(background_otp_cleanup_task(app))
+        app.bot_data["cleanup_task"] = cleanup_task
     except Exception as e:
         logging.error(f"Failed to start background task: {e}")
 
-def main():
+async def main():
+    # Build the application
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
-
+    
+    # Initialize the bot properly
+    await app.initialize()
+    
     mongo_client = AsyncIOMotorClient(MONGO_URI)
     db = mongo_client[DB_NAME]
     app.bot_data["db"] = db
@@ -2849,7 +2863,47 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), handle_text_message))
     
     logging.info("Bot started and polling...")
-    app.run_polling()
+    
+    try:
+        await app.start()
+        await app.updater.start_polling()
+        
+        # Keep the bot running
+        import signal
+        stop_event = asyncio.Event()
+        
+        def signal_handler(signum, frame):
+            stop_event.set()
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
+        await stop_event.wait()
+    except KeyboardInterrupt:
+        logging.info("Bot stopped by user")
+    except Exception as e:
+        logging.error(f"Bot error: {e}")
+    finally:
+        # Cleanup
+        logging.info("Shutting down bot...")
+        
+        # Cancel background task if it exists
+        if "cleanup_task" in app.bot_data:
+            cleanup_task = app.bot_data["cleanup_task"]
+            if not cleanup_task.done():
+                cleanup_task.cancel()
+                try:
+                    await cleanup_task
+                except asyncio.CancelledError:
+                    pass
+        
+        if app.updater.running:
+            await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
+        
+        # Close database connection
+        mongo_client.close()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
