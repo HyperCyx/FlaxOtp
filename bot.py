@@ -2916,22 +2916,10 @@ async def background_otp_cleanup_task(app):
                                     if session_id in user_sessions:
                                         del user_sessions[session_id]
                             
-                            # Send notification to all admins about the cleanup
-                            for admin_id in ADMIN_IDS:
-                                try:
-                                    session_info = f"\n🛑 Stopped {sessions_stopped} monitoring session(s)" if sessions_stopped > 0 else ""
-                                    user_info = f"\n📱 Notified {users_notified} user(s)" if users_notified > 0 else ""
-                                    await app.bot.send_message(
-                                        chat_id=admin_id,
-                                        text=f"🔄 **Background Cleanup**\n\n"
-                                             f"📞 Number: {formatted_number}\n"
-                                             f"🔐 {sender} : {otp}\n"
-                                             f"🗑️ Auto-deleted from server{session_info}{user_info}\n\n"
-                                             f"ℹ️ _Background cleanup at {datetime.now(TIMEZONE).strftime('%H:%M:%S')}_",
-                                        parse_mode=ParseMode.MARKDOWN
-                                    )
-                                except Exception as notify_error:
-                                    logging.error(f"Failed to notify admin {admin_id}: {notify_error}")
+                            # Log cleanup details to terminal only (no admin notifications)
+                            session_info = f" - Stopped {sessions_stopped} monitoring session(s)" if sessions_stopped > 0 else ""
+                            user_info = f" - Notified {users_notified} user(s)" if users_notified > 0 else ""
+                            logging.info(f"🔄 Background Cleanup: Number {formatted_number}, OTP {sender}:{otp}, Auto-deleted{session_info}{user_info} at {datetime.now(TIMEZONE).strftime('%H:%M:%S')}")
                         
                         # Small delay between number checks to avoid overwhelming the API
                         await asyncio.sleep(1)
