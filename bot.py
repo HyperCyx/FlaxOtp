@@ -404,7 +404,7 @@ def number_options_keyboard(number, country_code):
     return InlineKeyboardMarkup([
         # [InlineKeyboardButton("🔄 Change", callback_data=f"change_{country_code}")],  # TEMPORARILY SUSPENDED
         [InlineKeyboardButton("📩 Show SMS", callback_data=f"sms_{number}")],
-        [InlineKeyboardButton("🔄 Change", callback_data="menu")]
+        [InlineKeyboardButton("🆕 New Number", callback_data="menu")]
     ])
 
 # === COMMAND HANDLERS ===
@@ -651,6 +651,16 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Track current number for this user
         user_id = query.from_user.id
+        
+        # Cancel any previous sessions for this user
+        if user_id in user_monitoring_sessions:
+            old_sessions = list(user_monitoring_sessions[user_id].keys())
+            for session_id in old_sessions:
+                if session_id in active_number_monitors:
+                    await stop_otp_monitoring(session_id)
+            user_monitoring_sessions[user_id].clear()
+            logging.info(f"Cancelled {len(old_sessions)} previous sessions for user {user_id}")
+        
         current_user_numbers[user_id] = number
         logging.info(f"Updated current number for user {user_id}: {number}")
         
@@ -775,6 +785,16 @@ async def change_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Track current number for this user
         user_id = query.from_user.id
+        
+        # Cancel any previous sessions for this user
+        if user_id in user_monitoring_sessions:
+            old_sessions = list(user_monitoring_sessions[user_id].keys())
+            for session_id in old_sessions:
+                if session_id in active_number_monitors:
+                    await stop_otp_monitoring(session_id)
+            user_monitoring_sessions[user_id].clear()
+            logging.info(f"Cancelled {len(old_sessions)} previous sessions for user {user_id}")
+        
         current_user_numbers[user_id] = number
         logging.info(f"Updated current number for user {user_id}: {number}")
         
@@ -1114,6 +1134,23 @@ async def start_otp_monitoring(phone_number, message_id, chat_id, country_code, 
                     except Exception as e:
                         logging.error(f"Failed to send morning call timeout message for {phone_number}: {e}")
                     
+                    # Notify admins about monitoring session expiration
+                    for admin_id in ADMIN_IDS:
+                        try:
+                            await context.bot.send_message(
+                                chat_id=admin_id,
+                                text=f"⏰ **OTP Monitoring Expired**\n\n"
+                                     f"📞 Number: {format_number_display(phone_number)}\n"
+                                     f"👤 User ID: {monitoring_user_id}\n"
+                                     f"⏱️ Duration: 2 minutes\n"
+                                     f"🔄 Number returned to pool\n\n"
+                                     f"ℹ️ _Expired at {current_time.strftime('%H:%M:%S')}_",
+                                parse_mode=ParseMode.MARKDOWN
+                            )
+                            logging.info(f"📢 OTP monitoring expiration notification sent to admin {admin_id}")
+                        except Exception as admin_notify_error:
+                            logging.error(f"Failed to notify admin {admin_id} about monitoring expiration: {admin_notify_error}")
+                    
                     break
                 
                 # Wait 5 seconds before next check
@@ -1365,13 +1402,75 @@ async def show_sms(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+async def refresh_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Refresh user status via callback and check for OTPs"""
+    query = update.callback_query
+    await query.answer("🔍 Checking for new OTPs...", show_alert=True)
+    user_id = query.from_user.id
+    
+    # Get the most recent active number for this user
+    current_number = None
+    
+    # First check for active monitoring sessions (most reliable)
+    if user_id in user_monitoring_sessions and user_monitoring_sessions[user_id]:
+        # Get the most recent session (last added)
+        latest_session = max(user_monitoring_sessions[user_id].values(), 
+                           key=lambda x: x['start_time'])
+        current_number = latest_session['phone_number']
+        logging.info(f"Refresh status: Using number from active session: {current_number}")
+    
+    # Fallback to current_user_numbers if no active sessions
+    if not current_number:
+        current_number = current_user_numbers.get(user_id)
+        logging.info(f"Refresh status: Using number from current_user_numbers: {current_number}")
+    
+    if not current_number:
+        await query.edit_message_text("📱 You have no active number.\n\nUse /countries to get a phone number.")
+        return
+    
+    status_text = f"📱 Your Number: {format_number_display(current_number)}\n\n"
+    
+    # Check for OTP automatically
+    otp_text = "🧾 Recent OTPs: "
+    buttons = []
+    
+    try:
+        sms_info = await get_latest_sms_for_number(current_number)
+        if sms_info and sms_info['otp']:
+            otp_text += f"{sms_info['otp']} (from {sms_info['sms']['sender']})"
+        else:
+            otp_text += "None yet"
+    except Exception as e:
+        logging.error(f"Error checking SMS for {current_number}: {e}")
+        otp_text += "Check failed"
+    
+    status_text += otp_text
+    
+    # Add action buttons
+    buttons.append([InlineKeyboardButton("📩 Check SMS", callback_data=f"sms_{current_number}")])
+    buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data="refresh_status")])
+    buttons.append([InlineKeyboardButton("🌍 Get New Number", callback_data="menu")])
+    
+    keyboard = InlineKeyboardMarkup(buttons)
+    await query.edit_message_text(status_text, reply_markup=keyboard)
+
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    user_id = query.from_user.id
     
     # Stop any active OTP monitoring
     for phone_number in list(active_number_monitors.keys()):
         await stop_otp_monitoring(phone_number)
+    
+    # Clear user's current number and monitoring sessions
+    if user_id in current_user_numbers:
+        del current_user_numbers[user_id]
+        logging.info(f"Cleared current number for user {user_id}")
+    
+    if user_id in user_monitoring_sessions:
+        user_monitoring_sessions[user_id].clear()
+        logging.info(f"Cleared monitoring sessions for user {user_id}")
     
     db = context.bot_data["db"]
     keyboard = await countries_keyboard(db)
@@ -1817,6 +1916,18 @@ async def check_monitoring_status(update: Update, context: ContextTypes.DEFAULT_
     
     await update.message.reply_text(status_text)
 
+async def countries(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show all countries with interactive selection menu"""
+    db = context.bot_data["db"]
+    
+    # Create interactive keyboard with all countries
+    keyboard = await countries_keyboard(db)
+    
+    await update.message.reply_text(
+        "🌍 Select a country to get a phone number:",
+        reply_markup=keyboard
+    )
+
 async def check_country_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check how many numbers are available for each country"""
     user_id = update.effective_user.id
@@ -1846,8 +1957,13 @@ async def check_country_numbers(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text(status_text)
 
 async def show_my_morning_calls(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show all active morning calls for the user"""
+    """Show all active morning calls - ADMIN ONLY"""
     user_id = update.effective_user.id
+    
+    # Admin access control
+    if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
+        return
     
     if user_id not in user_monitoring_sessions or not user_monitoring_sessions[user_id]:
         await update.message.reply_text("📞 You have no active morning calls.")
@@ -1871,6 +1987,59 @@ async def show_my_morning_calls(update: Update, context: ContextTypes.DEFAULT_TY
         status_text += f"   🕐 Started: {start_time.strftime('%H:%M:%S')}\n\n"
     
     await update.message.reply_text(status_text)
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show user's current number status and check for OTPs"""
+    user_id = update.effective_user.id
+    
+    # Get the most recent active number for this user
+    current_number = None
+    
+    # First check for active monitoring sessions (most reliable)
+    if user_id in user_monitoring_sessions and user_monitoring_sessions[user_id]:
+        # Get the most recent session (last added)
+        latest_session = max(user_monitoring_sessions[user_id].values(), 
+                           key=lambda x: x['start_time'])
+        current_number = latest_session['phone_number']
+        logging.info(f"Status: Using number from active session: {current_number}")
+    
+    # Fallback to current_user_numbers if no active sessions
+    if not current_number:
+        current_number = current_user_numbers.get(user_id)
+        logging.info(f"Status: Using number from current_user_numbers: {current_number}")
+    
+    if not current_number:
+        await update.message.reply_text("📱 You have no active number.\n\nUse /countries to get a phone number.")
+        return
+    
+    # Send initial loading message
+    loading_msg = await update.message.reply_text("🔍 Checking for OTPs...")
+    
+    status_text = f"📱 Your Number: {format_number_display(current_number)}\n\n"
+    
+    # Check for OTP automatically
+    otp_text = "🧾 Recent OTPs: "
+    buttons = []
+    
+    try:
+        sms_info = await get_latest_sms_for_number(current_number)
+        if sms_info and sms_info['otp']:
+            otp_text += f"{sms_info['otp']} (from {sms_info['sms']['sender']})"
+        else:
+            otp_text += "None yet"
+    except Exception as e:
+        logging.error(f"Error checking SMS for {current_number}: {e}")
+        otp_text += "Check failed"
+    
+    status_text += otp_text
+    
+    # Add action buttons
+    buttons.append([InlineKeyboardButton("📩 Check SMS", callback_data=f"sms_{current_number}")])
+    buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data="refresh_status")])
+    buttons.append([InlineKeyboardButton("🌍 Get New Number", callback_data="menu")])
+    
+    keyboard = InlineKeyboardMarkup(buttons)
+    await loading_msg.edit_text(status_text, reply_markup=keyboard)
 
 async def update_sms_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Update SMS API session cookie"""
@@ -2003,15 +2172,16 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 **🔍 MONITORING & TESTING:**
 🔟 `/monitoring` - Check active OTP monitoring status
-1️⃣1️⃣ `/test` - Debug command for testing features
-1️⃣2️⃣ `/forceotp +923066082919` - **Force OTP check for specific number**
-1️⃣3️⃣ `/countrynumbers` - Check available numbers per country
+1️⃣1️⃣ `/morningcalls` - View all active user monitoring sessions
+1️⃣2️⃣ `/test` - Debug command for testing features
+1️⃣3️⃣ `/forceotp +923066082919` - **Force OTP check for specific number**
+1️⃣4️⃣ `/countrynumbers` - Check available numbers per country
 
 **🌐 API & SESSION MANAGEMENT:**
-1️⃣4️⃣ `/checkapi` - Test SMS API connection status
-1️⃣5️⃣ `/updatesms PHPSESSID=abc123def456` - Update SMS session cookie
-1️⃣6️⃣ `/reloadsession` - Reload session from config.py file
-1️⃣7️⃣ `/clearcache` - Clear countries cache for performance
+1️⃣5️⃣ `/checkapi` - Test SMS API connection status
+1️⃣6️⃣ `/updatesms PHPSESSID=abc123def456` - Update SMS session cookie
+1️⃣7️⃣ `/reloadsession` - Reload session from config.py file
+1️⃣8️⃣ `/clearcache` - Clear countries cache for performance
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📋 **QUICK EXAMPLES:**
@@ -2036,6 +2206,20 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
     
     await update.message.reply_text(admin_commands, parse_mode=ParseMode.MARKDOWN)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show user commands and help information"""
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "User"
+    
+    help_text = """🟢 FluxSMS Panel – Quick Guide
+
+/start — Get your number
+/status — Show your number & OTPs
+/countries — Show available countries
+/help — Show this menu"""
+    
+    await update.message.reply_text(help_text)
 
 async def clear_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Clear countries cache to force refresh"""
@@ -2769,22 +2953,10 @@ async def background_otp_cleanup_task(app):
                                     if session_id in user_sessions:
                                         del user_sessions[session_id]
                             
-                            # Send notification to all admins about the cleanup
-                            for admin_id in ADMIN_IDS:
-                                try:
-                                    session_info = f"\n🛑 Stopped {sessions_stopped} monitoring session(s)" if sessions_stopped > 0 else ""
-                                    user_info = f"\n📱 Notified {users_notified} user(s)" if users_notified > 0 else ""
-                                    await app.bot.send_message(
-                                        chat_id=admin_id,
-                                        text=f"🔄 **Background Cleanup**\n\n"
-                                             f"📞 Number: {formatted_number}\n"
-                                             f"🔐 {sender} : {otp}\n"
-                                             f"🗑️ Auto-deleted from server{session_info}{user_info}\n\n"
-                                             f"ℹ️ _Background cleanup at {datetime.now(TIMEZONE).strftime('%H:%M:%S')}_",
-                                        parse_mode=ParseMode.MARKDOWN
-                                    )
-                                except Exception as notify_error:
-                                    logging.error(f"Failed to notify admin {admin_id}: {notify_error}")
+                            # Log cleanup details to terminal only (no admin notifications)
+                            session_info = f" - Stopped {sessions_stopped} monitoring session(s)" if sessions_stopped > 0 else ""
+                            user_info = f" - Notified {users_notified} user(s)" if users_notified > 0 else ""
+                            logging.info(f"🔄 Background Cleanup: Number {formatted_number}, OTP {sender}:{otp}, Auto-deleted{session_info}{user_info} at {datetime.now(TIMEZONE).strftime('%H:%M:%S')}")
                         
                         # Small delay between number checks to avoid overwhelming the API
                         await asyncio.sleep(1)
@@ -2846,6 +3018,9 @@ async def main():
     app.add_handler(CommandHandler("cleanup", cleanup_used_numbers))
     app.add_handler(CommandHandler("forceotp", force_otp_check))
     app.add_handler(CommandHandler("monitoring", check_monitoring_status))
+    app.add_handler(CommandHandler("countries", countries))
+    app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("countrynumbers", check_country_numbers))
     app.add_handler(CommandHandler("resetnumber", reset_current_number))
     app.add_handler(CommandHandler("morningcalls", show_my_morning_calls))
@@ -2858,6 +3033,7 @@ async def main():
     app.add_handler(CallbackQueryHandler(send_number, pattern="^country_"))
     # app.add_handler(CallbackQueryHandler(change_number, pattern="^change_"))  # TEMPORARILY SUSPENDED
     app.add_handler(CallbackQueryHandler(show_sms, pattern="^sms_"))
+    app.add_handler(CallbackQueryHandler(refresh_status, pattern="^refresh_status$"))
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(MessageHandler(filters.Document.FileExtension("csv") & filters.User(ADMIN_IDS), upload_csv))
     app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), handle_text_message))
