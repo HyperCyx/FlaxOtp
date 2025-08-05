@@ -2363,29 +2363,27 @@ async def countries(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Check if keyboard has any buttons
         if not keyboard.inline_keyboard or len(keyboard.inline_keyboard) == 0:
-            # Create a setup keyboard for admins
             user_id = update.effective_user.id
-            if user_id in ADMIN_IDS:
-                setup_keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔧 Add Sample Data", callback_data="setup_sample_data")],
-                    [InlineKeyboardButton("📊 Diagnose Issues", callback_data="run_diagnosis")],
-                    [InlineKeyboardButton("📁 Upload Numbers", callback_data="start_upload")]
-                ])
-                await update.message.reply_text(
-                    "❌ **No countries available!**\n\n"
-                    "🔧 **Admin Setup Required**:\n"
-                    "• Database appears to be empty\n"
-                    "• Use buttons below to fix this\n\n"
-                    "💡 **Quick Actions:**",
-                    reply_markup=setup_keyboard
-                )
-            else:
-                await update.message.reply_text(
-                    "❌ **No countries available!**\n\n"
-                    "🚧 **Service Setup Required**\n"
-                    "The administrator needs to upload numbers first.\n\n"
-                    "Please contact the bot admin to add countries and numbers."
-                )
+            
+            # For regular users: Always show "Select Country:" without error messages
+            if user_id not in ADMIN_IDS:
+                await update.message.reply_text("🌍 Select Country:")
+                return
+            
+            # For admins only: Show setup options when database is empty
+            setup_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔧 Add Sample Data", callback_data="setup_sample_data")],
+                [InlineKeyboardButton("📊 Diagnose Issues", callback_data="run_diagnosis")],
+                [InlineKeyboardButton("📁 Upload Numbers", callback_data="start_upload")]
+            ])
+            await update.message.reply_text(
+                "❌ **No countries available!**\n\n"
+                "🔧 **Admin Setup Required**:\n"
+                "• Database appears to be empty\n"
+                "• Use buttons below to fix this\n\n"
+                "💡 **Quick Actions:**",
+                reply_markup=setup_keyboard
+            )
             return
         
         await update.message.reply_text(
