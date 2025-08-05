@@ -270,63 +270,130 @@ def get_country_flag(country_code):
         if not country_code:
             return '🌐'
             
-        country_code = str(country_code).upper()
+        country_code_original = str(country_code)
+        country_code = country_code_original.upper()
         
         # Special cases
         if country_code == 'XK':
             return '🇽🇰'
         
-        # Handle custom country codes (like "india_ws", "india_tg")
-        if "_" in country_code or len(country_code) > 2:
-            # Try to extract a valid country code from the custom name
-            if country_code.startswith("INDIA"):
-                return '🇮🇳'
-            elif country_code.startswith("SAUDI") or country_code.startswith("SA"):
-                return '🇸🇦'
-            elif country_code.startswith("USA") or country_code.startswith("US"):
-                return '🇺🇸'
-            elif country_code.startswith("UK") or country_code.startswith("GB"):
-                return '🇬🇧'
-            elif country_code.startswith("SRI") or country_code.startswith("LK"):
-                return '🇱🇰'
-            elif country_code.startswith("CANADA") or country_code.startswith("CA"):
-                return '🇨🇦'
-            elif country_code.startswith("BRAZIL") or country_code.startswith("BR"):
-                return '🇧🇷'
-            elif country_code.startswith("RUSSIA") or country_code.startswith("RU"):
-                return '🇷🇺'
-            elif country_code.startswith("CHINA") or country_code.startswith("CN"):
-                return '🇨🇳'
-            elif country_code.startswith("JAPAN") or country_code.startswith("JP"):
-                return '🇯🇵'
-            elif country_code.startswith("GERMANY") or country_code.startswith("DE"):
-                return '🇩🇪'
-            elif country_code.startswith("FRANCE") or country_code.startswith("FR"):
-                return '🇫🇷'
-            elif country_code.startswith("ITALY") or country_code.startswith("IT"):
-                return '🇮🇹'
-            elif country_code.startswith("SPAIN") or country_code.startswith("ES"):
-                return '🇪🇸'
-            elif country_code.startswith("AUSTRALIA") or country_code.startswith("AU"):
-                return '🇦🇺'
-            else:
-                # Try to extract 2-letter code if possible
-                for part in country_code.split("_"):
-                    if len(part) == 2 and part.isalpha():
-                        country_code = part
-                        break
-                else:
-                    return '🌐'
+        # Comprehensive country name to flag mapping
+        country_flag_mapping = {
+            # Full country names (likely from your database)
+            'UNITED_STATES': '🇺🇸', 'UNITED STATES': '🇺🇸', 'USA': '🇺🇸', 'US': '🇺🇸',
+            'UNITED_KINGDOM': '🇬🇧', 'UNITED KINGDOM': '🇬🇧', 'UK': '🇬🇧', 'GB': '🇬🇧', 'BRITAIN': '🇬🇧',
+            'INDIA': '🇮🇳', 'IN': '🇮🇳',
+            'CANADA': '🇨🇦', 'CA': '🇨🇦',
+            'AUSTRALIA': '🇦🇺', 'AU': '🇦🇺',
+            'GERMANY': '🇩🇪', 'DE': '🇩🇪', 'DEUTSCHLAND': '🇩🇪',
+            'FRANCE': '🇫🇷', 'FR': '🇫🇷',
+            'ITALY': '🇮🇹', 'IT': '🇮🇹', 'ITALIA': '🇮🇹',
+            'SPAIN': '🇪🇸', 'ES': '🇪🇸', 'ESPAÑA': '🇪🇸',
+            'BRAZIL': '🇧🇷', 'BR': '🇧🇷', 'BRASIL': '🇧🇷',
+            'RUSSIA': '🇷🇺', 'RU': '🇷🇺', 'RUSSIAN_FEDERATION': '🇷🇺',
+            'CHINA': '🇨🇳', 'CN': '🇨🇳',
+            'JAPAN': '🇯🇵', 'JP': '🇯🇵', 'NIPPON': '🇯🇵',
+            'SOUTH_KOREA': '🇰🇷', 'KOREA': '🇰🇷', 'KR': '🇰🇷',
+            'MEXICO': '🇲🇽', 'MX': '🇲🇽', 'MÉXICO': '🇲🇽',
+            'SOUTH_AFRICA': '🇿🇦', 'ZA': '🇿🇦',
+            'EGYPT': '🇪🇬', 'EG': '🇪🇬',
+            'SAUDI_ARABIA': '🇸🇦', 'SA': '🇸🇦', 'KSA': '🇸🇦',
+            'UAE': '🇦🇪', 'UNITED_ARAB_EMIRATES': '🇦🇪', 'AE': '🇦🇪',
+            'TURKEY': '🇹🇷', 'TR': '🇹🇷', 'TÜRKIYE': '🇹🇷',
+            'NETHERLANDS': '🇳🇱', 'NL': '🇳🇱', 'HOLLAND': '🇳🇱',
+            'SWITZERLAND': '🇨🇭', 'CH': '🇨🇭',
+            'SWEDEN': '🇸🇪', 'SE': '🇸🇪',
+            'NORWAY': '🇳🇴', 'NO': '🇳🇴',
+            'DENMARK': '🇩🇰', 'DK': '🇩🇰',
+            'FINLAND': '🇫🇮', 'FI': '🇫🇮',
+            'POLAND': '🇵🇱', 'PL': '🇵🇱', 'POLSKA': '🇵🇱',
+            'BELGIUM': '🇧🇪', 'BE': '🇧🇪',
+            'AUSTRIA': '🇦🇹', 'AT': '🇦🇹', 'ÖSTERREICH': '🇦🇹',
+            'PORTUGAL': '🇵🇹', 'PT': '🇵🇹',
+            'GREECE': '🇬🇷', 'GR': '🇬🇷',
+            'ISRAEL': '🇮🇱', 'IL': '🇮🇱',
+            'THAILAND': '🇹🇭', 'TH': '🇹🇭',
+            'SINGAPORE': '🇸🇬', 'SG': '🇸🇬',
+            'MALAYSIA': '🇲🇾', 'MY': '🇲🇾',
+            'INDONESIA': '🇮🇩', 'ID': '🇮🇩',
+            'PHILIPPINES': '🇵🇭', 'PH': '🇵🇭',
+            'VIETNAM': '🇻🇳', 'VN': '🇻🇳',
+            'PAKISTAN': '🇵🇰', 'PK': '🇵🇰',
+            'BANGLADESH': '🇧🇩', 'BD': '🇧🇩',
+            'SRI_LANKA': '🇱🇰', 'LK': '🇱🇰', 'LANKA': '🇱🇰',
+            'NIGERIA': '🇳🇬', 'NG': '🇳🇬',
+            'KENYA': '🇰🇪', 'KE': '🇰🇪',
+            'GHANA': '🇬🇭', 'GH': '🇬🇭',
+            'MOROCCO': '🇲🇦', 'MA': '🇲🇦',
+            'ALGERIA': '🇩🇿', 'DZ': '🇩🇿',
+            'TUNISIA': '🇹🇳', 'TN': '🇹🇳',
+            'JORDAN': '🇯🇴', 'JO': '🇯🇴',
+            'LEBANON': '🇱🇧', 'LB': '🇱🇧',
+            'KUWAIT': '🇰🇼', 'KW': '🇰🇼',
+            'QATAR': '🇶🇦', 'QA': '🇶🇦',
+            'BAHRAIN': '🇧🇭', 'BH': '🇧🇭',
+            'OMAN': '🇴🇲', 'OM': '🇴🇲',
+            'IRAQ': '🇮🇶', 'IQ': '🇮🇶',
+            'IRAN': '🇮🇷', 'IR': '🇮🇷',
+            'AFGHANISTAN': '🇦🇫', 'AF': '🇦🇫',
+            'UKRAINE': '🇺🇦', 'UA': '🇺🇦',
+            'ROMANIA': '🇷🇴', 'RO': '🇷🇴',
+            'HUNGARY': '🇭🇺', 'HU': '🇭🇺',
+            'CZECH_REPUBLIC': '🇨🇿', 'CZ': '🇨🇿', 'CZECHIA': '🇨🇿',
+            'SLOVAKIA': '🇸🇰', 'SK': '🇸🇰',
+            'SLOVENIA': '🇸🇮', 'SI': '🇸🇮',
+            'CROATIA': '🇭🇷', 'HR': '🇭🇷',
+            'SERBIA': '🇷🇸', 'RS': '🇷🇸',
+            'BOSNIA': '🇧🇦', 'BA': '🇧🇦', 'BOSNIA_AND_HERZEGOVINA': '🇧🇦',
+            'ALBANIA': '🇦🇱', 'AL': '🇦🇱',
+            'MONTENEGRO': '🇲🇪', 'ME': '🇲🇪',
+            'MACEDONIA': '🇲🇰', 'MK': '🇲🇰', 'NORTH_MACEDONIA': '🇲🇰',
+            'BULGARIA': '🇧🇬', 'BG': '🇧🇬',
+            'LITHUANIA': '🇱🇹', 'LT': '🇱🇹',
+            'LATVIA': '🇱🇻', 'LV': '🇱🇻',
+            'ESTONIA': '🇪🇪', 'EE': '🇪🇪',
+            'BELARUS': '🇧🇾', 'BY': '🇧🇾',
+            'MOLDOVA': '🇲🇩', 'MD': '🇲🇩',
+            'ARGENTINA': '🇦🇷', 'AR': '🇦🇷',
+            'CHILE': '🇨🇱', 'CL': '🇨🇱',
+            'PERU': '🇵🇪', 'PE': '🇵🇪',
+            'COLOMBIA': '🇨🇴', 'CO': '🇨🇴',
+            'VENEZUELA': '🇻🇪', 'VE': '🇻🇪',
+            'ECUADOR': '🇪🇨', 'EC': '🇪🇨',
+            'BOLIVIA': '🇧🇴', 'BO': '🇧🇴',
+            'PARAGUAY': '🇵🇾', 'PY': '🇵🇾',
+            'URUGUAY': '🇺🇾', 'UY': '🇺🇾',
+        }
         
-        # Validate 2-letter country code
-        if len(country_code) != 2 or not country_code.isalpha():
-            return '🌐'
+        # Try direct mapping first
+        if country_code in country_flag_mapping:
+            return country_flag_mapping[country_code]
         
-        # Convert to flag emoji
-        offset = ord('🇦') - ord('A')
-        return chr(ord(country_code[0]) + offset) + chr(ord(country_code[1]) + offset)
+        # Try with underscores replaced with spaces
+        country_code_spaced = country_code.replace('_', ' ')
+        if country_code_spaced in country_flag_mapping:
+            return country_flag_mapping[country_code_spaced]
+        
+        # Try partial matching for custom codes (like "india_ws", "usa_local")
+        for country_name, flag in country_flag_mapping.items():
+            if country_code.startswith(country_name.split('_')[0]) or country_code.startswith(country_name.split(' ')[0]):
+                return flag
+        
+        # If it's a standard 2-letter code, generate flag
+        if len(country_code) == 2 and country_code.isalpha():
+            offset = ord('🇦') - ord('A')
+            return chr(ord(country_code[0]) + offset) + chr(ord(country_code[1]) + offset)
+        
+        # Try to extract 2-letter code if possible
+        for part in country_code.split("_"):
+            if len(part) == 2 and part.isalpha():
+                offset = ord('🇦') - ord('A')
+                return chr(ord(part[0]) + offset) + chr(ord(part[1]) + offset)
+        
+        return '🌐'
+        
     except Exception as e:
-        logging.error(f"Error generating flag for country code '{country_code}': {e}")
+        logging.error(f"Error generating flag for country code '{country_code_original}': {e}")
         return '🌐'
 
 def clean_number(number):
