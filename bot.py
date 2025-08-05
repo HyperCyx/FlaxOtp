@@ -8,7 +8,7 @@ import time
 import re
 import json
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
@@ -428,6 +428,15 @@ def number_options_keyboard(number, country_code):
         [InlineKeyboardButton("🆕 New Number", callback_data="menu")]
     ])
 
+def get_main_reply_keyboard():
+    """Create the main reply keyboard with Get Number button"""
+    keyboard = [
+        [KeyboardButton("📱 Get Number")],
+        [KeyboardButton("📊 My Status"), KeyboardButton("🌍 Countries")],
+        [KeyboardButton("📞 Help")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
 # === COMMAND HANDLERS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -477,7 +486,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "✅ You have successfully joined the channel!\n\n"
                 "📱 Your account has been verified.\n"
                 "📞 You can now get phone numbers.",
-                reply_markup=number_keyboard()
+                reply_markup=get_main_reply_keyboard()
             )
         else:
             await update.message.reply_text("🚫 You haven't joined the channel yet!")
@@ -541,12 +550,16 @@ async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             logging.info(f"New user verified and stored: {user_id} ({username})")
             
-            keyboard = number_keyboard()
             await query.edit_message_text(
                 "✅ You have successfully joined the channel!\n\n"
                 "📱 Your account has been verified.\n"
-                "📞 You can now get phone numbers.",
-                reply_markup=keyboard
+                "📞 You can now get phone numbers."
+            )
+            
+            # Send reply keyboard in a separate message
+            await query.message.reply_text(
+                "📱 Use the buttons below:",
+                reply_markup=get_main_reply_keyboard()
             )
         else:
             await query.answer("❌ You need to join the channel first!", show_alert=True)
@@ -1729,6 +1742,60 @@ async def diagnose_deployment(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         await update.message.reply_text(f"❌ Diagnosis failed: {e}")
         logging.error(f"Deployment diagnosis error: {e}")
+
+async def handle_reply_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle reply keyboard button presses"""
+    text = update.message.text
+    user_id = update.effective_user.id
+    
+    # Check if user is verified
+    is_verified = await is_user_verified(user_id, context)
+    if not is_verified:
+        await update.message.reply_text(
+            "❌ Please use /start first to verify your account.",
+            reply_markup=get_main_reply_keyboard()
+        )
+        return
+    
+    if text == "📱 Get Number":
+        # Show countries for selection
+        db = context.bot_data["db"]
+        try:
+            keyboard = await countries_keyboard(db)
+            
+            if not keyboard.inline_keyboard or len(keyboard.inline_keyboard) == 0:
+                await update.message.reply_text("🌍 Select Country:")
+                return
+            
+            await update.message.reply_text(
+                f"🌍 Select country ({len(keyboard.inline_keyboard)} available):",
+                reply_markup=keyboard
+            )
+        except Exception as e:
+            logging.error(f"Get Number button error: {e}")
+            await update.message.reply_text(
+                "❌ Error loading countries. Please try again.",
+                reply_markup=get_main_reply_keyboard()
+            )
+    
+    elif text == "📊 My Status":
+        # Show user status
+        await status(update, context)
+    
+    elif text == "🌍 Countries":
+        # Show countries command
+        await countries(update, context)
+    
+    elif text == "📞 Help":
+        # Show help
+        await help_command(update, context)
+    
+    else:
+        # Unknown button - show menu again
+        await update.message.reply_text(
+            "Please use the buttons below:",
+            reply_markup=get_main_reply_keyboard()
+        )
 
 async def fix_empty_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Add sample data to empty database for testing"""
@@ -3812,6 +3879,7 @@ async def main():
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(CallbackQueryHandler(handle_setup_callback, pattern="^(setup_sample_data|run_diagnosis|start_upload)$"))
     app.add_handler(MessageHandler(filters.Document.FileExtension("csv") & filters.User(ADMIN_IDS), upload_csv))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.User(ADMIN_IDS)), handle_reply_keyboard))
     app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), handle_text_message))
     
     logging.info("Bot started and polling...")
