@@ -267,9 +267,15 @@ def extract_otp_from_message(message):
 def get_country_flag(country_code):
     """Get country flag emoji from country code"""
     try:
-        country_code = country_code.upper()
+        if not country_code:
+            return '🌐'
+            
+        country_code = str(country_code).upper()
+        
+        # Special cases
         if country_code == 'XK':
             return '🇽🇰'
+        
         # Handle custom country codes (like "india_ws", "india_tg")
         if "_" in country_code or len(country_code) > 2:
             # Try to extract a valid country code from the custom name
@@ -283,13 +289,44 @@ def get_country_flag(country_code):
                 return '🇬🇧'
             elif country_code.startswith("SRI") or country_code.startswith("LK"):
                 return '🇱🇰'
+            elif country_code.startswith("CANADA") or country_code.startswith("CA"):
+                return '🇨🇦'
+            elif country_code.startswith("BRAZIL") or country_code.startswith("BR"):
+                return '🇧🇷'
+            elif country_code.startswith("RUSSIA") or country_code.startswith("RU"):
+                return '🇷🇺'
+            elif country_code.startswith("CHINA") or country_code.startswith("CN"):
+                return '🇨🇳'
+            elif country_code.startswith("JAPAN") or country_code.startswith("JP"):
+                return '🇯🇵'
+            elif country_code.startswith("GERMANY") or country_code.startswith("DE"):
+                return '🇩🇪'
+            elif country_code.startswith("FRANCE") or country_code.startswith("FR"):
+                return '🇫🇷'
+            elif country_code.startswith("ITALY") or country_code.startswith("IT"):
+                return '🇮🇹'
+            elif country_code.startswith("SPAIN") or country_code.startswith("ES"):
+                return '🇪🇸'
+            elif country_code.startswith("AUSTRALIA") or country_code.startswith("AU"):
+                return '🇦🇺'
             else:
-                return '🌐'
+                # Try to extract 2-letter code if possible
+                for part in country_code.split("_"):
+                    if len(part) == 2 and part.isalpha():
+                        country_code = part
+                        break
+                else:
+                    return '🌐'
+        
+        # Validate 2-letter country code
         if len(country_code) != 2 or not country_code.isalpha():
             return '🌐'
+        
+        # Convert to flag emoji
         offset = ord('🇦') - ord('A')
         return chr(ord(country_code[0]) + offset) + chr(ord(country_code[1]) + offset)
-    except:
+    except Exception as e:
+        logging.error(f"Error generating flag for country code '{country_code}': {e}")
         return '🌐'
 
 def clean_number(number):
@@ -434,44 +471,7 @@ def number_keyboard():
         [InlineKeyboardButton("📞 Get Number", callback_data="request_number")]
     ])
 
-async def countries_keyboard(db):
-    """Create inline keyboard with country options"""
-    global countries_cache, countries_cache_time
-    from datetime import datetime, timedelta
-    
-    # PERFORMANCE OPTIMIZATION: Use cache if available and fresh (5 minutes)
-    now = datetime.now()
-    if countries_cache and countries_cache_time and (now - countries_cache_time) < timedelta(minutes=5):
-        logging.info("Using cached countries data")
-        countries_data = countries_cache
-    else:
-        logging.info("Fetching fresh countries data from database")
-        try:
-            coll = db[COUNTRIES_COLLECTION]
-            cursor = coll.find({}).sort("display_name", 1)
-            countries_data = await cursor.to_list(length=None)
-            
-            # Update cache
-            countries_cache = countries_data
-            countries_cache_time = now
-        except Exception as e:
-            logging.error(f"Database error getting countries: {e}")
-            return InlineKeyboardMarkup([])
-    
-    if not countries_data:
-        return InlineKeyboardMarkup([])
-    
-    # Create inline keyboard with countries
-    buttons = []
-    
-    for country in countries_data:
-        country_code = country["country_code"]
-        display_name = country["display_name"]
-        flag = country["flag"]
-        
-        buttons.append([InlineKeyboardButton(f"{flag} {display_name}", callback_data=f"country_{country_code}")])
-    
-    return InlineKeyboardMarkup(buttons)
+
 
 # === COMMAND HANDLERS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
