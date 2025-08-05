@@ -2363,27 +2363,8 @@ async def countries(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Check if keyboard has any buttons
         if not keyboard.inline_keyboard or len(keyboard.inline_keyboard) == 0:
-            user_id = update.effective_user.id
-            
-            # For regular users: Always show "Select Country:" without error messages
-            if user_id not in ADMIN_IDS:
-                await update.message.reply_text("🌍 Select Country:")
-                return
-            
-            # For admins only: Show setup options when database is empty
-            setup_keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔧 Add Sample Data", callback_data="setup_sample_data")],
-                [InlineKeyboardButton("📊 Diagnose Issues", callback_data="run_diagnosis")],
-                [InlineKeyboardButton("📁 Upload Numbers", callback_data="start_upload")]
-            ])
-            await update.message.reply_text(
-                "❌ **No countries available!**\n\n"
-                "🔧 **Admin Setup Required**:\n"
-                "• Database appears to be empty\n"
-                "• Use buttons below to fix this\n\n"
-                "💡 **Quick Actions:**",
-                reply_markup=setup_keyboard
-            )
+            # For everyone (users AND admins): Always show clean "Select Country:" message
+            await update.message.reply_text("🌍 Select Country:")
             return
         
         await update.message.reply_text(
