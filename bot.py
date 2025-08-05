@@ -2093,6 +2093,22 @@ or upload your numbers with `/add` command"""
     except Exception as e:
         await query.edit_message_text(f"❌ Diagnosis failed: {e}")
 
+async def check_manual_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Debug command to check current manual numbers status"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
+        return
+    
+    report = f"🔍 **Manual Numbers Debug**\n\n"
+    report += f"👤 **User ID**: {user_id}\n"
+    report += f"📱 **Manual Numbers**: {manual_numbers.get(user_id, [])}\n"
+    report += f"📊 **Count**: {len(manual_numbers.get(user_id, []))}\n"
+    report += f"🔄 **User State**: {user_states.get(user_id, 'None')}\n"
+    report += f"📁 **CSV Uploaded**: {'Yes' if uploaded_csv else 'No'}\n"
+    
+    await update.message.reply_text(report)
+
 async def check_upload_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Debug command to check database contents and upload status"""
     user_id = update.effective_user.id
@@ -2384,6 +2400,44 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Send 'cancel' to cancel the operation",
         parse_mode=ParseMode.MARKDOWN
     )
+
+async def quickadd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Quick add command to test manual number addition"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
+        return
+    
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text(
+            "Usage: /quickadd <numbers> <country>\n"
+            "Example: /quickadd 94741854027,94775995195 \"Sri Lanka\""
+        )
+        return
+    
+    numbers_str = args[0]
+    country_name = " ".join(args[1:])
+    
+    # Parse numbers
+    numbers = [num.strip() for num in numbers_str.split(',')]
+    
+    # Set up manual numbers
+    manual_numbers[user_id] = []
+    for number in numbers:
+        cleaned_number = clean_number(number)
+        if cleaned_number and len(cleaned_number) >= 8 and cleaned_number.isdigit():
+            manual_numbers[user_id].append(cleaned_number)
+    
+    await update.message.reply_text(
+        f"🔍 Quick add test:\n"
+        f"Numbers: {manual_numbers[user_id]}\n"
+        f"Country: {country_name}\n"
+        f"Processing..."
+    )
+    
+    # Process immediately
+    await process_all_numbers_with_country(update, context, country_name)
 
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Test command for debugging"""
@@ -3178,10 +3232,12 @@ async def process_all_numbers_with_country(update: Update, context: ContextTypes
 
     # Get manual numbers
     manual_nums = manual_numbers.get(user_id, [])
+    logging.info(f"Manual numbers for user {user_id}: {len(manual_nums)} numbers - {manual_nums}")
     
     # Process CSV file if available with progress updates
     csv_numbers = []
     if uploaded_csv:
+        logging.info(f"CSV file found for user {user_id}")
         # Create progress callback for CSV processing
         async def csv_progress_callback(message):
             await update.message.reply_text(message)
@@ -3189,6 +3245,9 @@ async def process_all_numbers_with_country(update: Update, context: ContextTypes
         csv_numbers, process_msg = await process_csv_file(uploaded_csv, csv_progress_callback)
         if not csv_numbers:
             csv_numbers = []
+        logging.info(f"CSV numbers processed: {len(csv_numbers)} numbers")
+    else:
+        logging.info(f"No CSV file for user {user_id}")
 
     # Combine all numbers
     all_numbers = []
@@ -3213,8 +3272,11 @@ async def process_all_numbers_with_country(update: Update, context: ContextTypes
             'source': 'csv'
         })
 
+    logging.info(f"Total combined numbers: {len(all_numbers)} (manual: {len(manual_nums)}, csv: {len(csv_numbers)})")
+    
     if not all_numbers:
         await update.message.reply_text("❌ No numbers found to process.")
+        logging.error(f"No numbers to process - manual_nums: {manual_nums}, csv_numbers: {csv_numbers}")
         return
 
     # Detect the most common country from all numbers
@@ -3979,6 +4041,8 @@ async def main():
     app.add_handler(CommandHandler("diagnose", diagnose_deployment))
     app.add_handler(CommandHandler("fixdb", fix_empty_database))
     app.add_handler(CommandHandler("uploadstatus", check_upload_status))
+    app.add_handler(CommandHandler("debugmanual", check_manual_numbers))
+    app.add_handler(CommandHandler("quickadd", quickadd))
     app.add_handler(CommandHandler("deleteall", delete_all_numbers))
     app.add_handler(CommandHandler("stats", show_stats))
     app.add_handler(CommandHandler("list", list_numbers))
