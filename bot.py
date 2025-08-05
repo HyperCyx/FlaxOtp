@@ -8,7 +8,7 @@ import time
 import re
 import json
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
@@ -428,25 +428,24 @@ def number_options_keyboard(number, country_code):
         [InlineKeyboardButton("🆕 New Number", callback_data="menu")]
     ])
 
-def get_main_reply_keyboard():
-    """Create the simple reply keyboard with only Get Number button"""
-    keyboard = [
-        [KeyboardButton("📱 Get Number")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+def number_keyboard():
+    """Create inline keyboard for getting numbers"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📞 Get Number", callback_data="request_number")]
+    ])
 
-async def get_countries_reply_keyboard(db):
-    """Create reply keyboard with country options"""
+async def countries_keyboard(db):
+    """Create inline keyboard with country options"""
     global countries_cache, countries_cache_time
     from datetime import datetime, timedelta
     
-    # Use cache if available and fresh (5 minutes)
+    # PERFORMANCE OPTIMIZATION: Use cache if available and fresh (5 minutes)
     now = datetime.now()
     if countries_cache and countries_cache_time and (now - countries_cache_time) < timedelta(minutes=5):
-        logging.info("Using cached countries data for reply keyboard")
+        logging.info("Using cached countries data")
         countries_data = countries_cache
     else:
-        logging.info("Fetching fresh countries data for reply keyboard")
+        logging.info("Fetching fresh countries data from database")
         try:
             coll = db[COUNTRIES_COLLECTION]
             cursor = coll.find({}).sort("display_name", 1)
@@ -456,33 +455,23 @@ async def get_countries_reply_keyboard(db):
             countries_cache = countries_data
             countries_cache_time = now
         except Exception as e:
-            logging.error(f"Database error getting countries for reply keyboard: {e}")
-            return ReplyKeyboardMarkup([[KeyboardButton("🔙 Back to Menu")]], resize_keyboard=True)
+            logging.error(f"Database error getting countries: {e}")
+            return InlineKeyboardMarkup([])
     
     if not countries_data:
-        return ReplyKeyboardMarkup([[KeyboardButton("🔙 Back to Menu")]], resize_keyboard=True)
+        return InlineKeyboardMarkup([])
     
-    # Create reply keyboard with countries (max 3 columns)
-    keyboard = []
-    row = []
+    # Create inline keyboard with countries
+    buttons = []
     
     for country in countries_data:
-        country_button = KeyboardButton(f"{country['flag']} {country['display_name']}")
-        row.append(country_button)
+        country_code = country["country_code"]
+        display_name = country["display_name"]
+        flag = country["flag"]
         
-        # Add row when we have 2 buttons (2 columns for better readability)
-        if len(row) == 2:
-            keyboard.append(row)
-            row = []
+        buttons.append([InlineKeyboardButton(f"{flag} {display_name}", callback_data=f"country_{country_code}")])
     
-    # Add remaining button if any
-    if row:
-        keyboard.append(row)
-    
-    # Add back button
-    keyboard.append([KeyboardButton("🔙 Back to Menu")])
-    
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+    return InlineKeyboardMarkup(buttons)
 
 # === COMMAND HANDLERS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -500,7 +489,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "✅ Welcome back Tella Bot! You are already verified.\n\n"
                 "📞 You can now get phone numbers.",
-                reply_markup=get_main_reply_keyboard()
+                reply_markup=number_keyboard()
             )
             return
         
@@ -533,7 +522,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "✅ You have successfully joined the channel!\n\n"
                 "📱 Your account has been verified.\n"
                 "📞 You can now get phone numbers.",
-                reply_markup=get_main_reply_keyboard()
+                reply_markup=number_keyboard()
             )
         else:
             await update.message.reply_text("🚫 You haven't joined the channel yet!")
@@ -569,13 +558,8 @@ async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # User already verified, proceed directly
             await query.edit_message_text(
                 "✅ Welcome back Tella Bot! You are already verified.\n\n"
-                "📞 You can now get phone numbers."
-            )
-            
-            # Send reply keyboard in a separate message
-            await query.message.reply_text(
-                "📱 Use the button below:",
-                reply_markup=get_main_reply_keyboard()
+                "📞 You can now get phone numbers.",
+                reply_markup=number_keyboard()
             )
             return
         
@@ -604,13 +588,8 @@ async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(
                 "✅ You have successfully joined the channel!\n\n"
                 "📱 Your account has been verified.\n"
-                "📞 You can now get phone numbers."
-            )
-            
-            # Send reply keyboard in a separate message
-            await query.message.reply_text(
-                "📱 Use the button below:",
-                reply_markup=get_main_reply_keyboard()
+                "📞 You can now get phone numbers.",
+                reply_markup=number_keyboard()
             )
         else:
             await query.answer("❌ You need to join the channel first!", show_alert=True)
@@ -1794,115 +1773,9 @@ async def diagnose_deployment(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"❌ Diagnosis failed: {e}")
         logging.error(f"Deployment diagnosis error: {e}")
 
-async def handle_reply_keyboard_working(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Working reply keyboard handler with full functionality"""
-    if not update.message or not update.message.text:
-        return
-        
-    text = update.message.text
-    user_id = update.effective_user.id
-    
-    # Log message for debugging
-    logging.info(f"Reply keyboard handler - User: {user_id}, Text: '{text}'")
-    
-    # Check if this is admin text that should be handled elsewhere
-    if user_id in ADMIN_IDS and not text.startswith("📱") and not text.startswith("🔙"):
-        logging.info(f"Admin message, letting admin handler process: {text}")
-        return
-    
-    # Check if user is verified
-    is_verified = await is_user_verified(user_id, context)
-    if not is_verified:
-        logging.info(f"User {user_id} not verified, showing start message")
-        await update.message.reply_text(
-            "❌ Please use /start first to verify your account.",
-            reply_markup=get_main_reply_keyboard()
-        )
-        return
-    
-    logging.info(f"User {user_id} is verified, processing button: '{text}'")
-    
-    if text == "📱 Get Number" or text == "Get Number" or "get number" in text.lower():
-        # Show countries for selection using reply keyboard
-        logging.info(f"Get Number button pressed by user {user_id}")
-        db = context.bot_data["db"]
-        try:
-            keyboard = await get_countries_reply_keyboard(db)
-            logging.info(f"Countries keyboard generated successfully for user {user_id}")
-            
-            await update.message.reply_text(
-                "🌍 Select a country:",
-                reply_markup=keyboard
-            )
-            logging.info(f"Countries sent to user {user_id}")
-        except Exception as e:
-            logging.error(f"Get Number button error: {e}")
-            await update.message.reply_text(
-                "❌ Error loading countries. Please try again.",
-                reply_markup=get_main_reply_keyboard()
-            )
-    
-    elif text == "🔙 Back to Menu":
-        # Return to main menu
-        logging.info(f"Back to Menu button pressed by user {user_id}")
-        await update.message.reply_text(
-            "📱 Main Menu:",
-            reply_markup=get_main_reply_keyboard()
-        )
-    
-    else:
-        # Check if this might be a country selection (format: "🇺🇸 United States")
-        if len(text) > 3 and text[0] in "🏁🏴🏳️🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿":
-            # This looks like a country selection
-            logging.info(f"Country selection detected by user {user_id}: {text}")
-            await handle_country_selection_from_reply(update, context, text)
-        else:
-            # Unknown button - show menu again
-            logging.info(f"Unknown button pressed by user {user_id}: '{text}'")
-            await update.message.reply_text(
-                f"Please use the button below:",
-                reply_markup=get_main_reply_keyboard()
-            )
 
-async def handle_country_selection_from_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, country_text: str):
-    """Handle country selection from reply keyboard"""
-    try:
-        db = context.bot_data["db"]
-        
-        # Extract country name from text (format: "🇺🇸 United States")
-        # Split by the flag emoji and take the country name part
-        country_name = country_text.split(" ", 1)[1] if " " in country_text else country_text
-        
-        # Find the country in database by display_name
-        countries_coll = db[COUNTRIES_COLLECTION]
-        country_doc = await countries_coll.find_one({"display_name": country_name})
-        
-        if not country_doc:
-            await update.message.reply_text(
-                "❌ Country not found. Please try again.",
-                reply_markup=get_main_reply_keyboard()
-            )
-            return
-        
-        # Get country code and send number
-        country_code = country_doc["country_code"]
-        user_id = update.effective_user.id
-        
-        # Call the existing send_number function
-        await send_number(user_id, country_code, update, context)
-        
-        # Return to main menu after getting number
-        await update.message.reply_text(
-            "📱 Use buttons below for more actions:",
-            reply_markup=get_main_reply_keyboard()
-        )
-        
-    except Exception as e:
-        logging.error(f"Error handling country selection from reply: {e}")
-        await update.message.reply_text(
-            "❌ Error processing country selection. Please try again.",
-            reply_markup=get_main_reply_keyboard()
-        )
+
+
 
 
 
@@ -2841,17 +2714,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     help_text = """🟢 Tella OTP Bot – Quick Guide
 
-📱 Get Number — Get phone number
-📊 My Status — Show your number & OTPs
-🌍 Countries — Show available countries
-📞 Help — Show this menu
-
+/start — Get your number
+/status — Show your number & OTPs
+/countries — Show available countries
+/help — Show this menu
 Support — @Tellabot """
     
-    await update.message.reply_text(
-        help_text,
-        reply_markup=get_main_reply_keyboard()
-    )
+    await update.message.reply_text(help_text)
 
 async def clear_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Clear countries cache to force refresh"""
@@ -3992,8 +3861,6 @@ async def main():
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(CallbackQueryHandler(handle_setup_callback, pattern="^(setup_sample_data|run_diagnosis|start_upload)$"))
     app.add_handler(MessageHandler(filters.Document.FileExtension("csv") & filters.User(ADMIN_IDS), upload_csv))
-    # Add reply keyboard handler for non-admin users
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.User(ADMIN_IDS)), handle_reply_keyboard_working))
     app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), handle_text_message))
     
     logging.info("Bot started and polling...")
