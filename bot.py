@@ -1794,41 +1794,75 @@ async def diagnose_deployment(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"❌ Diagnosis failed: {e}")
         logging.error(f"Deployment diagnosis error: {e}")
 
-async def handle_reply_keyboard_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Debug version of reply keyboard handler"""
+async def handle_reply_keyboard_working(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Working reply keyboard handler with full functionality"""
     if not update.message or not update.message.text:
         return
         
     text = update.message.text
     user_id = update.effective_user.id
     
-    # Log every message
-    logging.info(f"DEBUG: Message received - User: {user_id}, Text: '{text}'")
+    # Log message for debugging
+    logging.info(f"Reply keyboard handler - User: {user_id}, Text: '{text}'")
     
     # Check if this is admin text that should be handled elsewhere
-    if user_id in ADMIN_IDS and not text.startswith("📱"):
-        logging.info(f"DEBUG: Admin message, skipping: {text}")
+    if user_id in ADMIN_IDS and not text.startswith("📱") and not text.startswith("🔙"):
+        logging.info(f"Admin message, letting admin handler process: {text}")
         return
     
-    # If it's a button press, handle it
+    # Check if user is verified
+    is_verified = await is_user_verified(user_id, context)
+    if not is_verified:
+        logging.info(f"User {user_id} not verified, showing start message")
+        await update.message.reply_text(
+            "❌ Please use /start first to verify your account.",
+            reply_markup=get_main_reply_keyboard()
+        )
+        return
+    
+    logging.info(f"User {user_id} is verified, processing button: '{text}'")
+    
     if text == "📱 Get Number" or text == "Get Number" or "get number" in text.lower():
-        logging.info(f"DEBUG: Get Number button detected!")
-        await update.message.reply_text(
-            "✅ Get Number button works!\n🌍 Countries would load here...",
-            reply_markup=get_main_reply_keyboard()
-        )
+        # Show countries for selection using reply keyboard
+        logging.info(f"Get Number button pressed by user {user_id}")
+        db = context.bot_data["db"]
+        try:
+            keyboard = await get_countries_reply_keyboard(db)
+            logging.info(f"Countries keyboard generated successfully for user {user_id}")
+            
+            await update.message.reply_text(
+                "🌍 Select a country:",
+                reply_markup=keyboard
+            )
+            logging.info(f"Countries sent to user {user_id}")
+        except Exception as e:
+            logging.error(f"Get Number button error: {e}")
+            await update.message.reply_text(
+                "❌ Error loading countries. Please try again.",
+                reply_markup=get_main_reply_keyboard()
+            )
+    
     elif text == "🔙 Back to Menu":
-        logging.info(f"DEBUG: Back to Menu button detected!")
+        # Return to main menu
+        logging.info(f"Back to Menu button pressed by user {user_id}")
         await update.message.reply_text(
-            "✅ Back to Menu button works!",
+            "📱 Main Menu:",
             reply_markup=get_main_reply_keyboard()
         )
+    
     else:
-        logging.info(f"DEBUG: Unknown text received: '{text}'")
-        await update.message.reply_text(
-            f"DEBUG: I received '{text}'\nTap the button below:",
-            reply_markup=get_main_reply_keyboard()
-        )
+        # Check if this might be a country selection (format: "🇺🇸 United States")
+        if len(text) > 3 and text[0] in "🏁🏴🏳️🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿":
+            # This looks like a country selection
+            logging.info(f"Country selection detected by user {user_id}: {text}")
+            await handle_country_selection_from_reply(update, context, text)
+        else:
+            # Unknown button - show menu again
+            logging.info(f"Unknown button pressed by user {user_id}: '{text}'")
+            await update.message.reply_text(
+                f"Please use the button below:",
+                reply_markup=get_main_reply_keyboard()
+            )
 
 async def handle_country_selection_from_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, country_text: str):
     """Handle country selection from reply keyboard"""
@@ -1870,67 +1904,7 @@ async def handle_country_selection_from_reply(update: Update, context: ContextTy
             reply_markup=get_main_reply_keyboard()
         )
 
-async def handle_reply_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle reply keyboard button presses"""
-    text = update.message.text
-    user_id = update.effective_user.id
-    
-    # Debug logging
-    logging.info(f"Reply keyboard handler triggered - User: {user_id}, Text: '{text}'")
-    
-    # Check if user is verified
-    is_verified = await is_user_verified(user_id, context)
-    if not is_verified:
-        logging.info(f"User {user_id} not verified, showing start message")
-        await update.message.reply_text(
-            "❌ Please use /start first to verify your account.",
-            reply_markup=get_main_reply_keyboard()
-        )
-        return
-    
-    logging.info(f"User {user_id} is verified, processing button: '{text}'")
-    
-    if text == "📱 Get Number" or text == "Get Number" or "get number" in text.lower():
-        # Show countries for selection using reply keyboard
-        logging.info(f"Get Number button pressed by user {user_id}")
-        db = context.bot_data["db"]
-        try:
-            keyboard = await get_countries_reply_keyboard(db)
-            logging.info(f"Countries keyboard generated successfully for user {user_id}")
-            
-            await update.message.reply_text(
-                "🌍 Select a country:",
-                reply_markup=keyboard
-            )
-            logging.info(f"Countries sent to user {user_id}")
-        except Exception as e:
-            logging.error(f"Get Number button error: {e}")
-            await update.message.reply_text(
-                "❌ Error loading countries. Please try again.",
-                reply_markup=get_main_reply_keyboard()
-            )
-    
 
-    
-    elif text == "🔙 Back to Menu":
-        # Return to main menu
-        await update.message.reply_text(
-            "📱 Main Menu:",
-            reply_markup=get_main_reply_keyboard()
-        )
-    
-    else:
-        # Check if this might be a country selection (format: "🇺🇸 United States")
-        if len(text) > 3 and text[0] in "🏁🏴🏳️🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿":
-            # This looks like a country selection
-            await handle_country_selection_from_reply(update, context, text)
-        else:
-            # Unknown button - show menu again
-            logging.info(f"Unknown button pressed by user {user_id}: '{text}'")
-            await update.message.reply_text(
-                f"I received: '{text}'\nPlease use the button below:",
-                reply_markup=get_main_reply_keyboard()
-            )
 
 async def fix_empty_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Add sample data to empty database for testing"""
@@ -4018,8 +3992,8 @@ async def main():
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(CallbackQueryHandler(handle_setup_callback, pattern="^(setup_sample_data|run_diagnosis|start_upload)$"))
     app.add_handler(MessageHandler(filters.Document.FileExtension("csv") & filters.User(ADMIN_IDS), upload_csv))
-    # Add reply keyboard handler for all users (temporarily for debugging)
-    app.add_handler(MessageHandler(filters.TEXT, handle_reply_keyboard_debug))
+    # Add reply keyboard handler for non-admin users
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.User(ADMIN_IDS)), handle_reply_keyboard_working))
     app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), handle_text_message))
     
     logging.info("Bot started and polling...")
