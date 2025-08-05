@@ -719,7 +719,13 @@ async def send_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard = await countries_keyboard(db)
         await query.edit_message_text(
-            f"⚠️ No numbers available for {country_name} right now. Please try another country.",
+            f"❌ No numbers available for {country_name}\n\n"
+            f"🔧 **Admin Actions Needed**:\n"
+            f"• Upload numbers for {country_name} using `/add`\n"
+            f"• Use direct CSV upload to admin chat\n"
+            f"• Check available countries with `/countrynumbers`\n\n"
+            f"📊 Diagnose issues with `/diagnose`\n\n"
+            f"🌍 **Select a different country:**",
             reply_markup=keyboard
         )
 
@@ -1606,6 +1612,220 @@ async def check_database_status(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to check database status: {e}")
 
+async def diagnose_deployment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comprehensive deployment diagnosis for country/number issues"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
+        return
+    
+    await update.message.reply_text("🔍 Diagnosing deployment issues...")
+    
+    try:
+        db = context.bot_data["db"]
+        coll = db[COLLECTION_NAME]
+        countries_coll = db[COUNTRIES_COLLECTION]
+        
+        # Check database connection
+        await update.message.reply_text("1️⃣ Testing database connection...")
+        try:
+            await db.command('ping')
+            conn_status = "✅ Connected"
+        except Exception as e:
+            conn_status = f"❌ Failed: {e}"
+            await update.message.reply_text(f"🚨 Database connection failed: {e}")
+            return
+        
+        # Check collections exist and have data
+        await update.message.reply_text("2️⃣ Checking collections...")
+        
+        # Numbers collection
+        numbers_count = await coll.count_documents({})
+        sample_numbers = await coll.find({}).limit(3).to_list(length=3)
+        
+        # Countries collection  
+        countries_count = await countries_coll.count_documents({})
+        sample_countries = await countries_coll.find({}).limit(3).to_list(length=3)
+        
+        # Check countries cache
+        global countries_cache
+        cache_status = "✅ Loaded" if countries_cache else "❌ Empty"
+        cache_count = len(countries_cache) if countries_cache else 0
+        
+        # Test countries keyboard generation
+        await update.message.reply_text("3️⃣ Testing countries keyboard...")
+        try:
+            keyboard = await countries_keyboard(db)
+            keyboard_status = f"✅ Generated ({len(keyboard.inline_keyboard)} buttons)"
+        except Exception as e:
+            keyboard_status = f"❌ Failed: {e}"
+        
+        # Test number retrieval for first country
+        await update.message.reply_text("4️⃣ Testing number retrieval...")
+        number_test_status = "❌ No countries to test"
+        if sample_countries:
+            try:
+                test_country = sample_countries[0]['country_code']
+                test_result = await coll.aggregate([
+                    {"$match": {"country_code": test_country}},
+                    {"$sample": {"size": 1}}
+                ]).to_list(length=1)
+                if test_result:
+                    number_test_status = f"✅ Retrieved number for {test_country}"
+                else:
+                    number_test_status = f"❌ No numbers found for {test_country}"
+            except Exception as e:
+                number_test_status = f"❌ Query failed: {e}"
+        
+        # Generate comprehensive report
+        report = f"""🔍 **Deployment Diagnosis Report**
+
+🔌 **Database Connection**: {conn_status}
+
+📊 **Collections Status**:
+• Numbers: {numbers_count:,} documents
+• Countries: {countries_count:,} documents
+
+🗂️ **Cache Status**: {cache_status} ({cache_count} countries)
+
+⌨️ **Countries Keyboard**: {keyboard_status}
+
+🔢 **Number Retrieval**: {number_test_status}
+
+📱 **Sample Numbers**:"""
+
+        if sample_numbers:
+            for i, num in enumerate(sample_numbers[:3], 1):
+                country = num.get('country_code', 'Unknown')
+                number = num.get('number', 'Unknown')
+                report += f"\n{i}. {country}: {number}"
+        else:
+            report += "\n❌ No numbers in database"
+
+        report += f"\n\n🌍 **Sample Countries**:"
+        if sample_countries:
+            for i, country in enumerate(sample_countries[:3], 1):
+                code = country.get('country_code', 'Unknown')
+                name = country.get('display_name', 'Unknown')
+                report += f"\n{i}. {code}: {name}"
+        else:
+            report += "\n❌ No countries in database"
+        
+        # Provide solutions
+        if numbers_count == 0:
+            report += f"\n\n🚨 **ISSUE IDENTIFIED**: No numbers in database"
+            report += f"\n\n💡 **SOLUTION**: Upload numbers using:"
+            report += f"\n• /add command (manual + CSV)"
+            report += f"\n• Direct CSV upload to admin chat"
+            report += f"\n• /addlist command"
+        
+        if countries_count == 0:
+            report += f"\n\n🚨 **ISSUE IDENTIFIED**: No countries in database"
+            report += f"\n\n💡 **SOLUTION**: Countries are created automatically when uploading numbers"
+        
+        await update.message.reply_text(report, parse_mode=ParseMode.MARKDOWN)
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Diagnosis failed: {e}")
+        logging.error(f"Deployment diagnosis error: {e}")
+
+async def fix_empty_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add sample data to empty database for testing"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
+        return
+    
+    await update.message.reply_text("🔧 Checking if database needs sample data...")
+    
+    try:
+        db = context.bot_data["db"]
+        coll = db[COLLECTION_NAME]
+        countries_coll = db[COUNTRIES_COLLECTION]
+        
+        # Check if database is empty
+        numbers_count = await coll.count_documents({})
+        countries_count = await countries_coll.count_documents({})
+        
+        if numbers_count > 0:
+            await update.message.reply_text(f"ℹ️ Database already has {numbers_count} numbers. No sample data needed.")
+            return
+        
+        await update.message.reply_text("📊 Database is empty. Adding sample data...")
+        
+        # Sample numbers from your existing CSV files
+        sample_data = [
+            {"country": "Test Numbers", "numbers": [
+                "94741854027", "94775995195", "94743123866"
+            ]},
+            {"country": "Sample Country", "numbers": [
+                "+1234567890", "+1234567891", "+1234567892"
+            ]}
+        ]
+        
+        total_inserted = 0
+        
+        for country_data in sample_data:
+            country_name = country_data["country"]
+            country_code = country_name.lower().replace(" ", "_")
+            numbers = country_data["numbers"]
+            
+            # Prepare documents for bulk insert
+            documents = []
+            current_time = datetime.now(TIMEZONE)
+            
+            for number in numbers:
+                cleaned_number = clean_number(number)
+                documents.append({
+                    "country_code": country_code,
+                    "number": cleaned_number,
+                    "original_number": number,
+                    "range": "",
+                    "detected_country": "unknown",
+                    "added_at": current_time
+                })
+            
+            # Insert numbers
+            if documents:
+                result = await coll.insert_many(documents)
+                inserted_count = len(result.inserted_ids)
+                total_inserted += inserted_count
+                
+                # Create/update country entry
+                await countries_coll.update_one(
+                    {"country_code": country_code},
+                    {"$set": {
+                        "country_code": country_code,
+                        "display_name": country_name,
+                        "detected_country": "unknown",
+                        "last_updated": current_time,
+                        "number_count": inserted_count
+                    }},
+                    upsert=True
+                )
+                
+                await update.message.reply_text(f"✅ Added {inserted_count} numbers for {country_name}")
+        
+        # Clear cache to refresh
+        clear_countries_cache()
+        
+        await update.message.reply_text(
+            f"🎉 **Sample data added successfully!**\n\n"
+            f"📱 Total numbers: {total_inserted}\n"
+            f"🌍 Countries: {len(sample_data)}\n\n"
+            f"✅ You can now test:\n"
+            f"• `/countries` - View available countries\n"
+            f"• Select a country to get a number\n"
+            f"• `/diagnose` - Check deployment status\n\n"
+            f"🔧 **Add your own numbers using**:\n"
+            f"• `/add` command\n"
+            f"• Upload CSV files directly"
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to add sample data: {e}")
+        logging.error(f"Fix empty database error: {e}")
+
 async def check_api_connection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check SMS API connection status"""
     user_id = update.effective_user.id
@@ -1986,13 +2206,33 @@ async def countries(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show all countries with interactive selection menu"""
     db = context.bot_data["db"]
     
-    # Create interactive keyboard with all countries
-    keyboard = await countries_keyboard(db)
-    
-    await update.message.reply_text(
-        "🌍 Select country:",
-        reply_markup=keyboard
-    )
+    try:
+        # Create interactive keyboard with all countries
+        keyboard = await countries_keyboard(db)
+        
+        # Check if keyboard has any buttons
+        if not keyboard.inline_keyboard or len(keyboard.inline_keyboard) == 0:
+            await update.message.reply_text(
+                "❌ No countries available!\n\n"
+                "🔧 **Admin Actions Needed**:\n"
+                "• Use `/add` command to upload numbers\n"
+                "• Upload CSV file directly to admin chat\n"
+                "• Use `/addlist` to process uploaded CSV\n\n"
+                "📊 Check status with `/diagnose`"
+            )
+            return
+        
+        await update.message.reply_text(
+            f"🌍 Select country ({len(keyboard.inline_keyboard)} available):",
+            reply_markup=keyboard
+        )
+        
+    except Exception as e:
+        logging.error(f"Countries command error: {e}")
+        await update.message.reply_text(
+            f"❌ Error loading countries: {e}\n\n"
+            f"🔧 Admin can check with `/diagnose`"
+        )
 
 async def check_country_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check how many numbers are available for each country"""
@@ -3399,6 +3639,8 @@ async def main():
     app.add_handler(CommandHandler("delete", delete_country))
     app.add_handler(CommandHandler("checkapi", check_api_connection))
     app.add_handler(CommandHandler("checkdb", check_database_status))
+    app.add_handler(CommandHandler("diagnose", diagnose_deployment))
+    app.add_handler(CommandHandler("fixdb", fix_empty_database))
     app.add_handler(CommandHandler("deleteall", delete_all_numbers))
     app.add_handler(CommandHandler("stats", show_stats))
     app.add_handler(CommandHandler("list", list_numbers))
