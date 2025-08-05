@@ -2484,7 +2484,7 @@ async def countries(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         await update.message.reply_text(
-            f"🌍 Select country ({len(keyboard.inline_keyboard)} available):",
+            "🌍 Select country:",
             reply_markup=keyboard
         )
         
