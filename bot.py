@@ -2334,9 +2334,21 @@ def format_number_display(number):
     
     return number
 
+# === DATABASE OPTIMIZATION ===
+async def ensure_database_indexes(collection):
+    """Ensure optimal database indexes exist for fast queries"""
+    try:
+        # Create indexes for common query patterns
+        await collection.create_index("number")  # Fast duplicate checking
+        await collection.create_index("country_code")  # Fast country queries
+        await collection.create_index([("country_code", 1), ("number", 1)])  # Compound index
+        logging.info("Database indexes ensured for optimal performance")
+    except Exception as e:
+        logging.warning(f"Could not create database indexes: {e}")
+
 # === CSV PROCESSING ===
-async def process_csv_file(file_bytes):
-    """Process the uploaded CSV file and return extracted numbers"""
+async def process_csv_file(file_bytes, progress_callback=None):
+    """Process the uploaded CSV file and return extracted numbers with progress updates"""
     try:
         # Convert bytes to string and create CSV reader
         file_text = file_bytes.getvalue().decode('utf-8')
@@ -2346,9 +2358,19 @@ async def process_csv_file(file_bytes):
         if 'Number' not in csv_reader.fieldnames:
             return None, "CSV file must contain a 'Number' column"
         
-        # Process all rows
+        # Count total rows for progress tracking
+        rows = list(csv_reader)
+        total_rows = len(rows)
+        
+        # Send initial progress update for large files
+        if total_rows > 1000 and progress_callback:
+            await progress_callback(f"📊 Processing {total_rows} numbers from CSV file...")
+        
+        # Process all rows with progress updates
         numbers = []
-        for row in csv_reader:
+        processed_count = 0
+        
+        for i, row in enumerate(rows):
             try:
                 number = row.get('Number', '')
                 range_val = row.get('Range', '')
@@ -2366,11 +2388,19 @@ async def process_csv_file(file_bytes):
                         'country_code': country_code,
                         'range': range_val
                     })
+                
+                processed_count += 1
+                
+                # Progress update every 500 rows for large files
+                if total_rows > 1000 and progress_callback and processed_count % 500 == 0:
+                    percentage = (processed_count / total_rows) * 100
+                    await progress_callback(f"⏳ Processing... {processed_count}/{total_rows} ({percentage:.1f}%)")
+                    
             except Exception as e:
-                logging.error(f"Error processing row: {e}")
+                logging.error(f"Error processing row {i}: {e}")
                 continue
         
-        return numbers, f"Processed {len(numbers)} numbers"
+        return numbers, f"Processed {len(numbers)} numbers from {total_rows} rows"
     except Exception as e:
         return None, f"Error processing CSV file: {str(e)}"
 
@@ -2450,10 +2480,14 @@ async def process_all_numbers_with_country(update: Update, context: ContextTypes
     # Get manual numbers
     manual_nums = manual_numbers.get(user_id, [])
     
-    # Process CSV file if available
+    # Process CSV file if available with progress updates
     csv_numbers = []
     if uploaded_csv:
-        csv_numbers, process_msg = await process_csv_file(uploaded_csv)
+        # Create progress callback for CSV processing
+        async def csv_progress_callback(message):
+            await update.message.reply_text(message)
+        
+        csv_numbers, process_msg = await process_csv_file(uploaded_csv, csv_progress_callback)
         if not csv_numbers:
             csv_numbers = []
 
@@ -2507,36 +2541,144 @@ async def process_all_numbers_with_country(update: Update, context: ContextTypes
     for num_data in all_numbers:
         num_data['country_code'] = country_code
 
-    # Upload to database
+    # Upload to database using bulk operations for better performance
     inserted_count = 0
     number_details = []
     manual_count = 0
     csv_count = 0
-
+    
+    # Prepare all documents for bulk insertion with duplicate detection
+    documents_to_insert = []
+    current_time = datetime.now(TIMEZONE)
+    seen_numbers = set()  # Track duplicates within this upload
+    duplicates_count = 0
+    
+    # Check for existing numbers in database to avoid duplicates
+    existing_numbers = set()
+    if len(all_numbers) > 100:  # Only check for large uploads to avoid overhead
+        # Get existing numbers for this country
+        existing_docs = await coll.find(
+            {"country_code": country_code}, 
+            {"number": 1, "_id": 0}
+        ).to_list(length=None)
+        existing_numbers = {doc["number"] for doc in existing_docs}
+    
     for num_data in all_numbers:
-        try:
-            # Insert number with both custom country code and detected country
-            await coll.insert_one({
-                "country_code": num_data['country_code'],
-                "number": num_data['number'],
-                "original_number": num_data['original_number'],
-                "range": num_data['range'],
-                "detected_country": detected_country_code,
-                "added_at": datetime.now(TIMEZONE)
-            })
-            
-            inserted_count += 1
-            if num_data['source'] == 'manual':
-                manual_count += 1
-            else:
-                csv_count += 1
-            
-            # Get country flag from detected country, but display custom name
-            flag = get_country_flag(detected_country_code)
-            number_details.append(f"{flag} {num_data['number']} - {country_display_name}")
-        except Exception as e:
-            logging.error(f"Error inserting number: {e}")
+        number = num_data['number']
+        
+        # Skip duplicates within this upload
+        if number in seen_numbers:
+            duplicates_count += 1
             continue
+            
+        # Skip if number already exists in database (for large uploads)
+        if number in existing_numbers:
+            duplicates_count += 1
+            continue
+            
+        seen_numbers.add(number)
+        
+        documents_to_insert.append({
+            "country_code": num_data['country_code'],
+            "number": number,
+            "original_number": num_data['original_number'],
+            "range": num_data['range'],
+            "detected_country": detected_country_code,
+            "added_at": current_time
+        })
+        
+        if num_data['source'] == 'manual':
+            manual_count += 1
+        else:
+            csv_count += 1
+        
+        # Get country flag from detected country, but display custom name
+        flag = get_country_flag(detected_country_code)
+        number_details.append(f"{flag} {number} - {country_display_name}")
+    
+    # Add duplicate info if any were found
+    if duplicates_count > 0:
+        await update.message.reply_text(
+            f"ℹ️ Skipped {duplicates_count} duplicate numbers\n"
+            f"Will upload {len(documents_to_insert)} unique numbers"
+        )
+
+    # Perform bulk insert with batching for large uploads
+    if documents_to_insert:
+        try:
+            total_documents = len(documents_to_insert)
+            
+            # Send progress message for large uploads
+            if total_documents > 500:
+                progress_msg = await update.message.reply_text(
+                    f"⏳ Uploading {total_documents} numbers to database...\n"
+                    "Using optimized bulk upload for faster processing."
+                )
+            
+            # Use batching for very large uploads to prevent memory/timeout issues
+            batch_size = 1000  # Insert 1000 documents at a time
+            inserted_count = 0
+            
+            if total_documents > batch_size:
+                # Process in batches
+                for i in range(0, total_documents, batch_size):
+                    batch = documents_to_insert[i:i + batch_size]
+                    
+                    try:
+                        result = await coll.insert_many(batch, ordered=False)
+                        batch_inserted = len(result.inserted_ids)
+                        inserted_count += batch_inserted
+                        
+                        # Update progress every batch
+                        if total_documents > 500:
+                            progress_percentage = (inserted_count / total_documents) * 100
+                            await progress_msg.edit_text(
+                                f"📊 Uploading... {inserted_count}/{total_documents} ({progress_percentage:.1f}%)\n"
+                                f"Processed {i//batch_size + 1} batch(es) of {batch_size} numbers"
+                            )
+                            
+                    except Exception as batch_error:
+                        logging.error(f"Batch insert error for batch {i//batch_size + 1}: {batch_error}")
+                        # Try individual inserts for this batch
+                        for doc in batch:
+                            try:
+                                await coll.insert_one(doc)
+                                inserted_count += 1
+                            except Exception as single_error:
+                                logging.error(f"Single insert error: {single_error}")
+                                continue
+            else:
+                # Small upload, use single bulk insert
+                result = await coll.insert_many(documents_to_insert, ordered=False)
+                inserted_count = len(result.inserted_ids)
+            
+            # Final progress update
+            if total_documents > 500:
+                await progress_msg.edit_text(
+                    f"✅ Successfully uploaded {inserted_count} numbers!\n"
+                    "Finalizing upload and updating statistics..."
+                )
+            
+            # Ensure database indexes exist for optimal performance
+            await ensure_database_indexes(coll)
+                
+        except Exception as e:
+            logging.error(f"Bulk insert error: {e}")
+            # Fallback to individual inserts if all bulk operations fail
+            await update.message.reply_text("⚠️ Bulk upload failed, trying individual inserts...")
+            
+            for i, doc in enumerate(documents_to_insert):
+                try:
+                    await coll.insert_one(doc)
+                    inserted_count += 1
+                    
+                    # Progress update every 100 numbers
+                    if i > 0 and i % 100 == 0:
+                        await update.message.reply_text(f"📊 Uploaded {i}/{len(documents_to_insert)} numbers...")
+                        
+                except Exception as insert_error:
+                    logging.error(f"Error inserting individual number: {insert_error}")
+                    continue
 
     # Update countries collection
     await countries_coll.update_one(
