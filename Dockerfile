@@ -24,6 +24,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application files
 COPY bot.py .
 COPY config.py .
+COPY csv_number_manager.py .
+COPY csv_upload_handlers.py .
+COPY csv_number_provider.py .
 
 # Create health check endpoint script
 RUN echo '#!/usr/bin/env python3\n\
@@ -108,8 +111,8 @@ if __name__ == "__main__":\n\
     asyncio.run(bot.main())\n\
 ' > /app/start_bot.py && chmod +x /app/start_bot.py
 
-# Create cache directory for user data
-RUN mkdir -p /app/user_cache
+# Create cache directory for user data and CSV storage
+RUN mkdir -p /app/user_cache /app/csv_files
 
 # Expose port 8080 for health checks
 EXPOSE 8080
