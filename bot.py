@@ -429,11 +429,9 @@ def number_options_keyboard(number, country_code):
     ])
 
 def get_main_reply_keyboard():
-    """Create the main reply keyboard with Get Number button"""
+    """Create the simple reply keyboard with only Get Number button"""
     keyboard = [
-        [KeyboardButton("📱 Get Number")],
-        [KeyboardButton("📊 My Status"), KeyboardButton("🌍 Countries")],
-        [KeyboardButton("📞 Help")]
+        [KeyboardButton("📱 Get Number")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
@@ -502,7 +500,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "✅ Welcome back Tella Bot! You are already verified.\n\n"
                 "📞 You can now get phone numbers.",
-                reply_markup=number_keyboard()
+                reply_markup=get_main_reply_keyboard()
             )
             return
         
@@ -569,11 +567,15 @@ async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if existing_user:
             # User already verified, proceed directly
-            keyboard = number_keyboard()
             await query.edit_message_text(
                 "✅ Welcome back Tella Bot! You are already verified.\n\n"
-                "📞 You can now get phone numbers.",
-                reply_markup=keyboard
+                "📞 You can now get phone numbers."
+            )
+            
+            # Send reply keyboard in a separate message
+            await query.message.reply_text(
+                "📱 Use the button below:",
+                reply_markup=get_main_reply_keyboard()
             )
             return
         
@@ -607,7 +609,7 @@ async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Send reply keyboard in a separate message
             await query.message.reply_text(
-                "📱 Use the buttons below:",
+                "📱 Use the button below:",
                 reply_markup=get_main_reply_keyboard()
             )
         else:
@@ -1863,17 +1865,7 @@ async def handle_reply_keyboard(update: Update, context: ContextTypes.DEFAULT_TY
                 reply_markup=get_main_reply_keyboard()
             )
     
-    elif text == "📊 My Status":
-        # Show user status
-        await status(update, context)
-    
-    elif text == "🌍 Countries":
-        # Show countries command
-        await countries(update, context)
-    
-    elif text == "📞 Help":
-        # Show help
-        await help_command(update, context)
+
     
     elif text == "🔙 Back to Menu":
         # Return to main menu
