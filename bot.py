@@ -2093,6 +2093,55 @@ or upload your numbers with `/add` command"""
     except Exception as e:
         await query.edit_message_text(f"❌ Diagnosis failed: {e}")
 
+async def check_upload_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Debug command to check database contents and upload status"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
+        return
+    
+    try:
+        db = context.bot_data["db"]
+        coll = db[COLLECTION_NAME]
+        countries_coll = db[COUNTRIES_COLLECTION]
+        
+        # Check total numbers
+        total_numbers = await coll.count_documents({})
+        
+        # Check countries
+        countries = await countries_coll.find({}).to_list(length=None)
+        
+        # Get recent uploads (last 10)
+        recent_numbers = await coll.find({}).sort("added_at", -1).limit(10).to_list(length=10)
+        
+        report = f"📊 **Database Status Check**\n\n"
+        report += f"📱 **Total Numbers**: {total_numbers:,}\n"
+        report += f"🌍 **Total Countries**: {len(countries)}\n\n"
+        
+        if countries:
+            report += "🗂️ **Countries List**:\n"
+            for country in countries[:10]:  # Show first 10
+                flag = get_country_flag(country.get('detected_country', country['country_code']))
+                count = country.get('number_count', 0)
+                report += f"{flag} {country['display_name']} ({country['country_code']}) - {count} numbers\n"
+            if len(countries) > 10:
+                report += f"... and {len(countries) - 10} more countries\n"
+            report += "\n"
+        
+        if recent_numbers:
+            report += "📱 **Recent Numbers** (last 10):\n"
+            for num_data in recent_numbers:
+                flag = get_country_flag(num_data.get('detected_country', num_data['country_code']))
+                added_time = num_data.get('added_at', 'Unknown time')
+                report += f"{flag} {num_data['number']} ({num_data['country_code']}) - {added_time}\n"
+        else:
+            report += "❌ **No numbers found in database**\n"
+        
+        await update.message.reply_text(report)
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error checking database: {e}")
+
 async def check_api_connection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check SMS API connection status"""
     user_id = update.effective_user.id
@@ -3440,30 +3489,57 @@ async def process_csv_with_country(update: Update, context: ContextTypes.DEFAULT
     for num_data in numbers:
         num_data['country_code'] = country_code
 
-    # Upload to database
+    # Upload to database using bulk operations for better performance
     inserted_count = 0
     number_details = []
-
+    
+    # Prepare all documents for bulk insertion
+    documents_to_insert = []
+    current_time = datetime.now(TIMEZONE)
+    
     for num_data in numbers:
+        documents_to_insert.append({
+            "country_code": num_data['country_code'],
+            "number": num_data['number'],
+            "original_number": num_data['original_number'],
+            "range": num_data['range'],
+            "detected_country": detected_country_code,  # Store detected country for flag
+            "added_at": current_time
+        })
+        
+        # Get country flag from detected country, but display custom name
+        flag = get_country_flag(detected_country_code)
+        number_details.append(f"{flag} {num_data['number']} - {country_display_name}")
+    
+    # Perform bulk insert
+    if documents_to_insert:
         try:
-            # Insert number with both custom country code and detected country
-            await coll.insert_one({
-                "country_code": num_data['country_code'],
-                "number": num_data['number'],
-                "original_number": num_data['original_number'],
-                "range": num_data['range'],
-                "detected_country": detected_country_code,  # Store detected country for flag
-                "added_at": datetime.now(TIMEZONE)
-            })
+            # Send progress message for large uploads
+            if len(documents_to_insert) > 500:
+                progress_msg = await update.message.reply_text(
+                    f"⏳ Uploading {len(documents_to_insert)} numbers to database..."
+                )
             
-            inserted_count += 1
+            result = await coll.insert_many(documents_to_insert, ordered=False)
+            inserted_count = len(result.inserted_ids)
             
-            # Get country flag from detected country, but display custom name
-            flag = get_country_flag(detected_country_code)
-            number_details.append(f"{flag} {num_data['number']} - {country_display_name}")
+            if len(documents_to_insert) > 500:
+                await progress_msg.edit_text(
+                    f"✅ Successfully uploaded {inserted_count} numbers!"
+                )
+                
         except Exception as e:
-            logging.error(f"Error inserting number: {e}")
-            continue
+            logging.error(f"Bulk insert error: {e}")
+            # Fallback to individual inserts
+            await update.message.reply_text("⚠️ Bulk upload failed, trying individual inserts...")
+            
+            for doc in documents_to_insert:
+                try:
+                    await coll.insert_one(doc)
+                    inserted_count += 1
+                except Exception as insert_error:
+                    logging.error(f"Error inserting individual number: {insert_error}")
+                    continue
 
     # Update countries collection
     await countries_coll.update_one(
@@ -3902,6 +3978,7 @@ async def main():
     app.add_handler(CommandHandler("checkdb", check_database_status))
     app.add_handler(CommandHandler("diagnose", diagnose_deployment))
     app.add_handler(CommandHandler("fixdb", fix_empty_database))
+    app.add_handler(CommandHandler("uploadstatus", check_upload_status))
     app.add_handler(CommandHandler("deleteall", delete_all_numbers))
     app.add_handler(CommandHandler("stats", show_stats))
     app.add_handler(CommandHandler("list", list_numbers))
