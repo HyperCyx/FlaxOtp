@@ -437,6 +437,55 @@ def get_main_reply_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
+async def get_countries_reply_keyboard(db):
+    """Create reply keyboard with country options"""
+    global countries_cache, countries_cache_time
+    from datetime import datetime, timedelta
+    
+    # Use cache if available and fresh (5 minutes)
+    now = datetime.now()
+    if countries_cache and countries_cache_time and (now - countries_cache_time) < timedelta(minutes=5):
+        logging.info("Using cached countries data for reply keyboard")
+        countries_data = countries_cache
+    else:
+        logging.info("Fetching fresh countries data for reply keyboard")
+        try:
+            coll = db[COUNTRIES_COLLECTION]
+            cursor = coll.find({}).sort("display_name", 1)
+            countries_data = await cursor.to_list(length=None)
+            
+            # Update cache
+            countries_cache = countries_data
+            countries_cache_time = now
+        except Exception as e:
+            logging.error(f"Database error getting countries for reply keyboard: {e}")
+            return ReplyKeyboardMarkup([[KeyboardButton("🔙 Back to Menu")]], resize_keyboard=True)
+    
+    if not countries_data:
+        return ReplyKeyboardMarkup([[KeyboardButton("🔙 Back to Menu")]], resize_keyboard=True)
+    
+    # Create reply keyboard with countries (max 3 columns)
+    keyboard = []
+    row = []
+    
+    for country in countries_data:
+        country_button = KeyboardButton(f"{country['flag']} {country['display_name']}")
+        row.append(country_button)
+        
+        # Add row when we have 2 buttons (2 columns for better readability)
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    
+    # Add remaining button if any
+    if row:
+        keyboard.append(row)
+    
+    # Add back button
+    keyboard.append([KeyboardButton("🔙 Back to Menu")])
+    
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+
 # === COMMAND HANDLERS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1743,6 +1792,46 @@ async def diagnose_deployment(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"❌ Diagnosis failed: {e}")
         logging.error(f"Deployment diagnosis error: {e}")
 
+async def handle_country_selection_from_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, country_text: str):
+    """Handle country selection from reply keyboard"""
+    try:
+        db = context.bot_data["db"]
+        
+        # Extract country name from text (format: "🇺🇸 United States")
+        # Split by the flag emoji and take the country name part
+        country_name = country_text.split(" ", 1)[1] if " " in country_text else country_text
+        
+        # Find the country in database by display_name
+        countries_coll = db[COUNTRIES_COLLECTION]
+        country_doc = await countries_coll.find_one({"display_name": country_name})
+        
+        if not country_doc:
+            await update.message.reply_text(
+                "❌ Country not found. Please try again.",
+                reply_markup=get_main_reply_keyboard()
+            )
+            return
+        
+        # Get country code and send number
+        country_code = country_doc["country_code"]
+        user_id = update.effective_user.id
+        
+        # Call the existing send_number function
+        await send_number(user_id, country_code, update, context)
+        
+        # Return to main menu after getting number
+        await update.message.reply_text(
+            "📱 Use buttons below for more actions:",
+            reply_markup=get_main_reply_keyboard()
+        )
+        
+    except Exception as e:
+        logging.error(f"Error handling country selection from reply: {e}")
+        await update.message.reply_text(
+            "❌ Error processing country selection. Please try again.",
+            reply_markup=get_main_reply_keyboard()
+        )
+
 async def handle_reply_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle reply keyboard button presses"""
     text = update.message.text
@@ -1758,17 +1847,13 @@ async def handle_reply_keyboard(update: Update, context: ContextTypes.DEFAULT_TY
         return
     
     if text == "📱 Get Number":
-        # Show countries for selection
+        # Show countries for selection using reply keyboard
         db = context.bot_data["db"]
         try:
-            keyboard = await countries_keyboard(db)
-            
-            if not keyboard.inline_keyboard or len(keyboard.inline_keyboard) == 0:
-                await update.message.reply_text("🌍 Select Country:")
-                return
+            keyboard = await get_countries_reply_keyboard(db)
             
             await update.message.reply_text(
-                f"🌍 Select country ({len(keyboard.inline_keyboard)} available):",
+                "🌍 Select a country:",
                 reply_markup=keyboard
             )
         except Exception as e:
@@ -1790,12 +1875,24 @@ async def handle_reply_keyboard(update: Update, context: ContextTypes.DEFAULT_TY
         # Show help
         await help_command(update, context)
     
-    else:
-        # Unknown button - show menu again
+    elif text == "🔙 Back to Menu":
+        # Return to main menu
         await update.message.reply_text(
-            "Please use the buttons below:",
+            "📱 Main Menu:",
             reply_markup=get_main_reply_keyboard()
         )
+    
+    else:
+        # Check if this might be a country selection (format: "🇺🇸 United States")
+        if len(text) > 3 and text[0] in "🏁🏴🏳️🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿":
+            # This looks like a country selection
+            await handle_country_selection_from_reply(update, context, text)
+        else:
+            # Unknown button - show menu again
+            await update.message.reply_text(
+                "Please use the buttons below:",
+                reply_markup=get_main_reply_keyboard()
+            )
 
 async def fix_empty_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Add sample data to empty database for testing"""
@@ -2732,13 +2829,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     help_text = """🟢 Tella OTP Bot – Quick Guide
 
-/start — Get your number
-/status — Show your number & OTPs
-/countries — Show available countries
-/help — Show this menu
+📱 Get Number — Get phone number
+📊 My Status — Show your number & OTPs
+🌍 Countries — Show available countries
+📞 Help — Show this menu
+
 Support — @Tellabot """
     
-    await update.message.reply_text(help_text)
+    await update.message.reply_text(
+        help_text,
+        reply_markup=get_main_reply_keyboard()
+    )
 
 async def clear_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Clear countries cache to force refresh"""
