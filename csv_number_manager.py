@@ -15,9 +15,16 @@ from io import StringIO
 import asyncio
 
 # Configuration
-CSV_STORAGE_DIR = "/app/csv_files"
-USAGE_TRACKING_FILE = "/app/csv_files/usage_tracking.json"
-CSV_METADATA_FILE = "/app/csv_files/metadata.json"
+import os
+# Use /app for production (Docker), /workspace for development
+if os.path.exists("/app"):
+    CSV_STORAGE_DIR = "/app/csv_files"
+    USAGE_TRACKING_FILE = "/app/csv_files/usage_tracking.json"
+    CSV_METADATA_FILE = "/app/csv_files/metadata.json"
+else:
+    CSV_STORAGE_DIR = "/workspace/csv_files"
+    USAGE_TRACKING_FILE = "/workspace/csv_files/usage_tracking.json"
+    CSV_METADATA_FILE = "/workspace/csv_files/metadata.json"
 
 class CSVNumberManager:
     def __init__(self):
