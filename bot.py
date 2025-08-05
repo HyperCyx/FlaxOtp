@@ -395,7 +395,8 @@ async def countries_keyboard(db):
                 countries_data = countries_cache
             else:
                 logging.error("No countries data available - cache empty and database failed")
-                return []
+                # Return empty keyboard markup instead of empty list
+                return InlineKeyboardMarkup([])
     
     buttons = []
     for country_info in countries_data:
@@ -1826,6 +1827,156 @@ async def fix_empty_database(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(f"❌ Failed to add sample data: {e}")
         logging.error(f"Fix empty database error: {e}")
 
+async def handle_setup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle setup callback buttons for empty database"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    if user_id not in ADMIN_IDS:
+        await query.edit_message_text("❌ Admin access required.")
+        return
+    
+    action = query.data
+    
+    if action == "setup_sample_data":
+        await query.edit_message_text("🔧 Adding sample data to database...")
+        # Call the fix database function
+        await fix_empty_database_internal(query, context)
+        
+    elif action == "run_diagnosis":
+        await query.edit_message_text("🔍 Running deployment diagnosis...")
+        # Call the diagnosis function
+        await diagnose_deployment_internal(query, context)
+        
+    elif action == "start_upload":
+        await query.edit_message_text(
+            "📁 **Upload Numbers**\n\n"
+            "Choose one of these methods:\n\n"
+            "1️⃣ **Manual + CSV**: Send `/add` command\n"
+            "2️⃣ **Direct CSV**: Upload CSV file to this chat\n"
+            "3️⃣ **Process CSV**: Send `/addlist` command\n\n"
+            "💡 **CSV Format**: Must have 'Number' column\n"
+            "Example: Number,Range\n"
+            "+1234567890,USA"
+        )
+
+async def fix_empty_database_internal(query, context):
+    """Internal version of fix_empty_database for callback usage"""
+    try:
+        db = context.bot_data["db"]
+        coll = db[COLLECTION_NAME]
+        countries_coll = db[COUNTRIES_COLLECTION]
+        
+        # Check if database is empty
+        numbers_count = await coll.count_documents({})
+        
+        if numbers_count > 0:
+            await query.edit_message_text(f"ℹ️ Database already has {numbers_count} numbers. No sample data needed.")
+            return
+        
+        await query.edit_message_text("📊 Database is empty. Adding sample data...")
+        
+        # Sample numbers
+        sample_data = [
+            {"country": "Test Numbers", "numbers": [
+                "94741854027", "94775995195", "94743123866"
+            ]},
+            {"country": "Sample Country", "numbers": [
+                "+1234567890", "+1234567891", "+1234567892"
+            ]}
+        ]
+        
+        total_inserted = 0
+        
+        for country_data in sample_data:
+            country_name = country_data["country"]
+            country_code = country_name.lower().replace(" ", "_")
+            numbers = country_data["numbers"]
+            
+            # Prepare documents
+            documents = []
+            current_time = datetime.now(TIMEZONE)
+            
+            for number in numbers:
+                cleaned_number = clean_number(number)
+                documents.append({
+                    "country_code": country_code,
+                    "number": cleaned_number,
+                    "original_number": number,
+                    "range": "",
+                    "detected_country": "unknown",
+                    "added_at": current_time
+                })
+            
+            # Insert numbers
+            if documents:
+                result = await coll.insert_many(documents)
+                inserted_count = len(result.inserted_ids)
+                total_inserted += inserted_count
+                
+                # Create country entry
+                await countries_coll.update_one(
+                    {"country_code": country_code},
+                    {"$set": {
+                        "country_code": country_code,
+                        "display_name": country_name,
+                        "detected_country": "unknown",
+                        "last_updated": current_time,
+                        "number_count": inserted_count
+                    }},
+                    upsert=True
+                )
+        
+        # Clear cache
+        clear_countries_cache()
+        
+        await query.edit_message_text(
+            f"🎉 **Sample data added successfully!**\n\n"
+            f"📱 Numbers: {total_inserted}\n"
+            f"🌍 Countries: {len(sample_data)}\n\n"
+            f"✅ **Test now with**: `/countries`"
+        )
+        
+    except Exception as e:
+        await query.edit_message_text(f"❌ Failed to add sample data: {e}")
+
+async def diagnose_deployment_internal(query, context):
+    """Internal version of diagnose_deployment for callback usage"""
+    try:
+        await query.edit_message_text("🔍 Running diagnosis...")
+        
+        db = context.bot_data["db"]
+        coll = db[COLLECTION_NAME]
+        countries_coll = db[COUNTRIES_COLLECTION]
+        
+        # Quick diagnosis
+        numbers_count = await coll.count_documents({})
+        countries_count = await countries_coll.count_documents({})
+        
+        if numbers_count == 0:
+            diagnosis = f"""🔍 **Diagnosis Complete**
+
+❌ **Issue Found**: Empty Database
+• Numbers: {numbers_count}
+• Countries: {countries_count}
+
+💡 **Solution**: Use 'Add Sample Data' button above
+or upload your numbers with `/add` command"""
+        else:
+            diagnosis = f"""🔍 **Diagnosis Complete**
+
+✅ **Database Status**: Healthy
+• Numbers: {numbers_count:,}
+• Countries: {countries_count}
+
+💡 **Action**: Try `/countries` command"""
+        
+        await query.edit_message_text(diagnosis)
+        
+    except Exception as e:
+        await query.edit_message_text(f"❌ Diagnosis failed: {e}")
+
 async def check_api_connection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check SMS API connection status"""
     user_id = update.effective_user.id
@@ -2212,14 +2363,29 @@ async def countries(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Check if keyboard has any buttons
         if not keyboard.inline_keyboard or len(keyboard.inline_keyboard) == 0:
-            await update.message.reply_text(
-                "❌ No countries available!\n\n"
-                "🔧 **Admin Actions Needed**:\n"
-                "• Use `/add` command to upload numbers\n"
-                "• Upload CSV file directly to admin chat\n"
-                "• Use `/addlist` to process uploaded CSV\n\n"
-                "📊 Check status with `/diagnose`"
-            )
+            # Create a setup keyboard for admins
+            user_id = update.effective_user.id
+            if user_id in ADMIN_IDS:
+                setup_keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔧 Add Sample Data", callback_data="setup_sample_data")],
+                    [InlineKeyboardButton("📊 Diagnose Issues", callback_data="run_diagnosis")],
+                    [InlineKeyboardButton("📁 Upload Numbers", callback_data="start_upload")]
+                ])
+                await update.message.reply_text(
+                    "❌ **No countries available!**\n\n"
+                    "🔧 **Admin Setup Required**:\n"
+                    "• Database appears to be empty\n"
+                    "• Use buttons below to fix this\n\n"
+                    "💡 **Quick Actions:**",
+                    reply_markup=setup_keyboard
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ **No countries available!**\n\n"
+                    "🚧 **Service Setup Required**\n"
+                    "The administrator needs to upload numbers first.\n\n"
+                    "Please contact the bot admin to add countries and numbers."
+                )
             return
         
         await update.message.reply_text(
@@ -3665,6 +3831,7 @@ async def main():
     app.add_handler(CallbackQueryHandler(show_sms, pattern="^sms_"))
     app.add_handler(CallbackQueryHandler(refresh_status, pattern="^refresh_status$"))
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
+    app.add_handler(CallbackQueryHandler(handle_setup_callback, pattern="^(setup_sample_data|run_diagnosis|start_upload)$"))
     app.add_handler(MessageHandler(filters.Document.FileExtension("csv") & filters.User(ADMIN_IDS), upload_csv))
     app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), handle_text_message))
     
