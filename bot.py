@@ -365,17 +365,37 @@ async def countries_keyboard(db):
         countries_data = countries_cache
     else:
         logging.info("Refreshing countries cache")
-        countries_coll = db[COUNTRIES_COLLECTION]
         
-        # PERFORMANCE OPTIMIZATION: Get all country data in a single query instead of individual queries
-        countries_data = await countries_coll.find({}).to_list(length=None)
+        # Use safe database operation with retry logic
+        async def fetch_countries():
+            countries_coll = db[COUNTRIES_COLLECTION]
+            # PERFORMANCE OPTIMIZATION: Get all country data in a single query with projection
+            return await countries_coll.find(
+                {},
+                {"country_code": 1, "display_name": 1, "number_count": 1, "_id": 0}
+            ).to_list(length=None)
         
-        # Sort by display_name for better user experience
-        countries_data.sort(key=lambda x: x.get("display_name", x.get("country_code", "")))
+        countries_data = await safe_database_operation(
+            fetch_countries,
+            default_value=[],
+            operation_name="Fetch countries data"
+        )
         
-        # Cache the result
-        countries_cache = countries_data
-        countries_cache_time = now
+        if countries_data:
+            # Sort by display_name for better user experience
+            countries_data.sort(key=lambda x: x.get("display_name", x.get("country_code", "")))
+            
+            # Cache the result
+            countries_cache = countries_data
+            countries_cache_time = now
+        else:
+            # If fetch failed, use old cache if available
+            if countries_cache:
+                logging.warning("Using stale countries cache due to database error")
+                countries_data = countries_cache
+            else:
+                logging.error("No countries data available - cache empty and database failed")
+                return []
     
     buttons = []
     for country_info in countries_data:
@@ -1540,6 +1560,52 @@ async def delete_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Deleted {result.deleted_count} numbers for {flag} {display_name} (`{country_code}`)."
     )
 
+async def check_database_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check database connection and performance status"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await send_lol_message(update)
+        return
+    
+    await update.message.reply_text("🔍 Checking database health...")
+    
+    try:
+        db = context.bot_data["db"]
+        health_info = await check_database_health(db)
+        
+        if health_info['status'] == 'healthy':
+            status_emoji = "✅"
+            status_text = "Healthy"
+        elif health_info['status'] == 'slow':
+            status_emoji = "⚠️"
+            status_text = "Slow"
+        else:
+            status_emoji = "❌"
+            status_text = "Unhealthy"
+        
+        message = f"""📊 **Database Health Report**
+
+{status_emoji} **Status**: {status_text}
+🏓 **Ping**: {health_info.get('ping_ms', 'N/A')} ms
+💾 **Size**: {health_info.get('database_size_mb', 'N/A')} MB
+📱 **Numbers**: {health_info.get('numbers_count', 'N/A'):,}
+🌍 **Countries**: {health_info.get('countries_count', 'N/A')}
+👥 **Users**: {health_info.get('users_count', 'N/A'):,}
+📇 **Indexes**: {health_info.get('indexes_count', 'N/A')}
+
+💡 **Performance Tips**:
+• Ping < 50ms: Excellent
+• Ping 50-100ms: Good  
+• Ping > 100ms: Consider optimization"""
+
+        if 'error' in health_info:
+            message += f"\n\n❌ **Error**: {health_info['error']}"
+            
+        await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to check database status: {e}")
+
 async def check_api_connection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check SMS API connection status"""
     user_id = update.effective_user.id
@@ -2346,6 +2412,89 @@ async def ensure_database_indexes(collection):
     except Exception as e:
         logging.warning(f"Could not create database indexes: {e}")
 
+async def ensure_all_database_indexes(db):
+    """Ensure all collections have optimal indexes"""
+    try:
+        # Numbers collection indexes
+        numbers_coll = db[COLLECTION_NAME]
+        await numbers_coll.create_index("number", unique=False)  # Fast number lookups
+        await numbers_coll.create_index("country_code")  # Fast country filtering
+        await numbers_coll.create_index([("country_code", 1), ("number", 1)])  # Compound for country+number
+        await numbers_coll.create_index("added_at")  # For time-based queries
+        await numbers_coll.create_index("detected_country")  # For country detection queries
+        
+        # Countries collection indexes
+        countries_coll = db[COUNTRIES_COLLECTION]
+        await countries_coll.create_index("country_code", unique=True)  # Unique country codes
+        await countries_coll.create_index("display_name")  # Fast name lookups
+        await countries_coll.create_index("last_updated")  # For cache invalidation
+        
+        # Users collection indexes
+        users_coll = db[USERS_COLLECTION]
+        await users_coll.create_index("user_id", unique=True)  # Unique user IDs
+        await users_coll.create_index("username")  # Fast username lookups
+        await users_coll.create_index("added_at")  # For user analytics
+        
+        logging.info("✅ All database indexes created successfully")
+        
+    except Exception as e:
+        logging.warning(f"⚠️ Some database indexes could not be created: {e}")
+
+async def check_database_health(db):
+    """Check database connection health and performance"""
+    try:
+        # Test basic connectivity
+        start_time = time.time()
+        await db.command('ping')
+        ping_time = (time.time() - start_time) * 1000  # Convert to milliseconds
+        
+        # Get database stats
+        stats = await db.command('dbStats')
+        
+        # Check collection counts
+        numbers_count = await db[COLLECTION_NAME].count_documents({})
+        countries_count = await db[COUNTRIES_COLLECTION].count_documents({})
+        users_count = await db[USERS_COLLECTION].count_documents({})
+        
+        health_info = {
+            'ping_ms': round(ping_time, 2),
+            'database_size_mb': round(stats.get('dataSize', 0) / (1024 * 1024), 2),
+            'numbers_count': numbers_count,
+            'countries_count': countries_count,
+            'users_count': users_count,
+            'indexes_count': stats.get('indexes', 0),
+            'status': 'healthy' if ping_time < 100 else 'slow'
+        }
+        
+        logging.info(f"📊 Database health: {health_info}")
+        return health_info
+        
+    except Exception as e:
+        logging.error(f"❌ Database health check failed: {e}")
+        return {'status': 'unhealthy', 'error': str(e)}
+
+async def retry_database_operation(operation, max_retries=3, delay=1):
+    """Retry database operations with exponential backoff"""
+    for attempt in range(max_retries):
+        try:
+            return await operation()
+        except Exception as e:
+            if attempt == max_retries - 1:  # Last attempt
+                logging.error(f"❌ Database operation failed after {max_retries} attempts: {e}")
+                raise
+            else:
+                wait_time = delay * (2 ** attempt)  # Exponential backoff
+                logging.warning(f"⚠️ Database operation failed (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
+                await asyncio.sleep(wait_time)
+
+async def safe_database_operation(db_operation, default_value=None, operation_name="Database operation"):
+    """Safely execute database operations with error handling"""
+    try:
+        return await retry_database_operation(db_operation)
+    except Exception as e:
+        logging.error(f"❌ {operation_name} failed: {e}")
+        return default_value
+
 # === CSV PROCESSING ===
 async def process_csv_file(file_bytes, progress_callback=None):
     """Process the uploaded CSV file and return extracted numbers with progress updates"""
@@ -3129,13 +3278,69 @@ async def background_otp_cleanup_task(app):
 # === MAIN BOT SETUP ===
 async def post_init(app):
     """Initialize background tasks after bot startup"""
-    logging.info("🔄 Starting background cleanup task...")
+    logging.info("🔄 Starting background tasks...")
     try:
-        # Store the task reference in app.bot_data for cleanup later
+        # Store the task references in app.bot_data for cleanup later
         cleanup_task = asyncio.create_task(background_otp_cleanup_task(app))
+        health_task = asyncio.create_task(background_database_health_task(app))
+        
         app.bot_data["cleanup_task"] = cleanup_task
+        app.bot_data["health_task"] = health_task
+        
+        logging.info("✅ Background tasks started successfully")
     except Exception as e:
-        logging.error(f"Failed to start background task: {e}")
+        logging.error(f"Failed to start background tasks: {e}")
+
+async def background_database_health_task(app):
+    """Background task to monitor database health and performance"""
+    logging.info("📊 Database health monitoring started")
+    last_health_check = 0
+    health_check_interval = 300  # Check every 5 minutes
+    
+    try:
+        # Wait for bot to fully initialize
+        await asyncio.sleep(15)
+        
+        while True:
+            try:
+                current_time = time.time()
+                
+                # Check database health every 5 minutes
+                if current_time - last_health_check > health_check_interval:
+                    db = app.bot_data.get("db")
+                    if db:
+                        health_info = await check_database_health(db)
+                        
+                        # Log health status
+                        if health_info['status'] == 'unhealthy':
+                            logging.error(f"❌ Database unhealthy: {health_info}")
+                        elif health_info['status'] == 'slow':
+                            logging.warning(f"⚠️ Database slow: ping={health_info.get('ping_ms')}ms")
+                        else:
+                            logging.debug(f"✅ Database healthy: ping={health_info.get('ping_ms')}ms")
+                        
+                        # Clear cache if database is slow to force refresh
+                        if health_info.get('ping_ms', 0) > 200:
+                            clear_countries_cache()
+                            logging.info("🔄 Cleared countries cache due to slow database response")
+                    else:
+                        logging.error("❌ Database connection not available")
+                    
+                    last_health_check = current_time
+                
+                # Sleep for 60 seconds before next check
+                await asyncio.sleep(60)
+                
+            except Exception as e:
+                logging.error(f"❌ Database health monitoring error: {e}")
+                await asyncio.sleep(60)
+                
+    except asyncio.CancelledError:
+        logging.info("🛑 Database health monitoring cancelled")
+    except Exception as e:
+        logging.error(f"❌ Fatal error in database health monitoring: {e}")
+    finally:
+        logging.info("📊 Database health monitoring finished")
 
 async def main():
     # Build the application
@@ -3144,9 +3349,48 @@ async def main():
     # Initialize the bot properly
     await app.initialize()
     
-    mongo_client = AsyncIOMotorClient(MONGO_URI)
-    db = mongo_client[DB_NAME]
-    app.bot_data["db"] = db
+    # Optimized MongoDB connection with better performance settings
+    mongo_client = AsyncIOMotorClient(
+        MONGO_URI,
+        # Connection Pool Settings for better performance
+        maxPoolSize=50,          # Maximum connections in pool
+        minPoolSize=5,           # Minimum connections in pool
+        maxIdleTimeMS=30000,     # Close connections after 30s idle
+        
+        # Timeout Settings for faster error detection
+        connectTimeoutMS=5000,   # 5 second connection timeout
+        serverSelectionTimeoutMS=5000,  # 5 second server selection timeout
+        socketTimeoutMS=30000,   # 30 second socket timeout
+        
+        # Write Concern for faster writes (adjust based on your needs)
+        w=1,                     # Acknowledge writes from primary only
+        wtimeoutMS=5000,         # 5 second write timeout
+        
+        # Read Settings for better performance
+        readPreference='primary',  # Read from primary for consistency
+        retryWrites=True,        # Retry failed writes automatically
+        
+        # Additional optimizations
+        compressors=['zstd', 'zlib', 'snappy'],  # Enable compression
+        zlibCompressionLevel=6,  # Compression level
+    )
+    
+    # Test connection and get database
+    try:
+        # Test the connection
+        await mongo_client.admin.command('ping')
+        logging.info("✅ MongoDB connection established successfully")
+        
+        db = mongo_client[DB_NAME]
+        app.bot_data["db"] = db
+        app.bot_data["mongo_client"] = mongo_client  # Store client for health checks
+        
+        # Ensure optimal indexes are created
+        await ensure_all_database_indexes(db)
+        
+    except Exception as e:
+        logging.error(f"❌ Failed to connect to MongoDB: {e}")
+        raise
 
     # Register handlers
     app.add_handler(CommandHandler("start", start))
@@ -3154,6 +3398,7 @@ async def main():
     app.add_handler(CommandHandler("add", add_command))
     app.add_handler(CommandHandler("delete", delete_country))
     app.add_handler(CommandHandler("checkapi", check_api_connection))
+    app.add_handler(CommandHandler("checkdb", check_database_status))
     app.add_handler(CommandHandler("deleteall", delete_all_numbers))
     app.add_handler(CommandHandler("stats", show_stats))
     app.add_handler(CommandHandler("list", list_numbers))
